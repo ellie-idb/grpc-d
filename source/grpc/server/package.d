@@ -9,9 +9,119 @@ import std.concurrency;
 import std.parallelism;
 import std.signals;
 import fearless;
+import core.sync.semaphore;
 
 struct ServerPtr {
     grpc_server* server;
+}
+
+import std.container.dlist;
+
+class ServerWriter(T) {
+    private {
+        CompletionQueue!"Pluck" _cq;
+        grpc_call* _call;
+        Tag _tag;
+    }
+
+    bool start() {
+        grpc_op[1] _initialOp;
+        _initialOp[0].op = GRPC_OP_SEND_INITIAL_METADATA;
+        auto status = grpc_call_start_batch(_call, _initialOp.ptr, 1, &_tag, null);
+
+        if(status == GRPC_CALL_OK) {
+            _cq.next(_tag, 1.msecs);
+            return true;
+        }
+
+        return false;
+    }
+
+    bool write(T obj) {
+        import std.array;
+        import google.protobuf;
+        bool ok = false;
+        ubyte[] _out = obj.toProtobuf.array;
+        grpc_slice msg = grpc_slice_ref(grpc_slice_from_copied_buffer(cast(const(char*))_out, _out.length));
+        grpc_byte_buffer* bytebuf = grpc_raw_byte_buffer_create(&msg, 1);
+
+        grpc_op[1] _sendOp;
+        _sendOp[0].op = GRPC_OP_SEND_MESSAGE;
+        _sendOp[0].data.send_message.send_message = bytebuf;
+        auto status = grpc_call_start_batch(_call, _sendOp.ptr, 1, &_tag, null);
+        if(status == GRPC_CALL_OK) {
+            _cq.next(_tag, 1.msecs);
+            ok = true;
+        }
+
+        grpc_slice_unref(msg);
+
+        return ok;
+    }
+
+    bool finish(Status _stat) {
+        bool ok = false;
+
+        grpc_op[1] _finalOp;
+
+        _finalOp[0].op = GRPC_OP_SEND_STATUS_FROM_SERVER;
+        grpc_slice statusDetails;
+        if(_stat.code != 0) {
+            _finalOp[0].data.send_status_from_server.status = cast(grpc_status_code)_stat.code;
+            if(_stat.message != "") {
+                import std.string : toStringz;
+                statusDetails = grpc_slice_ref(grpc_slice_from_copied_buffer(_stat.message.toStringz, _stat.message.length));
+                _finalOp[0].data.send_status_from_server.status_details = &statusDetails;
+            }
+        }
+        else {
+            _finalOp[0].data.send_status_from_server.status = GRPC_STATUS_OK;
+        }
+
+        auto status = grpc_call_start_batch(_call, _finalOp.ptr, 1, &_tag, null);
+        if(status == GRPC_CALL_OK) {
+            _cq.next(_tag, 1.msecs);
+            ok = true;
+        }
+
+        grpc_slice_unref(statusDetails);
+ 
+        return true;
+    }
+
+    package this(CompletionQueue!"Pluck" cq, grpc_call* call, ref Tag tag) {
+        _cq = cq;
+        _call = call;
+        _tag = tag;
+
+    }
+
+    ~this() {
+
+    }
+
+
+
+}
+
+class ServerReader(T) {
+    private {
+        Semaphore readSm;
+
+    }
+
+    bool read(ref T obj) {
+        return true;
+    }
+
+    this() {
+
+    }
+
+    ~this() {
+
+
+    }
 }
 
 class Server 
@@ -54,28 +164,49 @@ class Server
         }
 
         void watch(Tag received) {
+            writeln("new tag");
+            writeln(received.metadata);
             if(received.metadata[0] == 0xDE) {
                 if(received.metadata[2] == cast(ubyte)threadIndex) {
+                    writeln("OK!");
                     newTag = true;
+                    newTag_id = cast(ulong)received.metadata[2];
                     newTag_index = cast(ulong)received.metadata[1];
+                    newTag_indexInTagTable = cast(ulong)received.metadata[4];
                 }
             }
         }
         
     private:
         static Status function(T, ubyte[], ref ubyte[])[string] _arr; //table holds all of the lambdas created from CTFE earlier
+
+        static void function(T, ubyte[], grpc_call* _call, ref Tag tag)[string] _streamTable1; //Server -> Client Streaming
+
+        static void function(T, ref ubyte[], grpc_call* _call, ref Tag tag)[string] _streamTable2; //Client -> Server Streaming
+
+        static void function(T, grpc_call* _call, ref Tag tag)[string] _streamTable3; //Client <-> Server Streaming
+
+        int numStream1Funcs;
+        int numStream2Funcs;
+        int numStream3Funcs;
+        int numRegularFuncs;
+
         static void*[string] registeredMethods; //pointers from grpc_server_register_method
         static Tag[] tagTable;
 
         __gshared bool newTag;
+        __gshared ulong newTag_id;
+        __gshared ulong newTag_indexInTagTable;
         __gshared ulong newTag_index;
+
+        static CompletionQueue!"Pluck" cq;
 
         bool initDone;
 
         T serverInstance_;
         void run() {
             grpc_init();
-            CompletionQueue!"Pluck" cq = new CompletionQueue!"Pluck"();
+            cq = new CompletionQueue!"Pluck"();
 
             registerAll();
 
@@ -102,41 +233,67 @@ class Server
             */
             alias parent = BaseTypeTuple!T[1];
             static foreach(i, val; getSymbolsByUDA!(parent, RPC)) {
-                /*
-                   The remote name (what is sent over the wire) is encoded
-                   into the function with the help of the @RPC UDA.
-                   This is part of the protobuf compiler, and gRPCD does
-                   not require an additional pass with a gRPC compiler, as
-                   UDAs eliminate the need for a second pass.
-                */
+                () {
+                    /*
+                       The remote name (what is sent over the wire) is encoded
+                       into the function with the help of the @RPC UDA.
+                       This is part of the protobuf compiler, and gRPCD does
+                       not require an additional pass with a gRPC compiler, as
+                       UDAs eliminate the need for a second pass.
+                    */
 
-                enum remoteName = getUDAs!(val, RPC)[0].methodName;
+                    enum remoteName = getUDAs!(val, RPC)[0].methodName;
 
-                debug writeln("REGISTER: " ~ remoteName);
-                if(remoteName !in registeredMethods) {
-                    assert(0, "Expected the method to be present in the registered table..");
-                }
+                    debug writeln("REGISTER: " ~ remoteName);
+                    if(remoteName !in registeredMethods) {
+                        assert(0, "Expected the method to be present in the registered table..");
+                    }
 
-                /* 
-                   Create a unique tag for each call, and preserve it, as it contains
-                   valuable metadata that we refer to when the main notification thread emits
-                   a tag corresponding to a function call.
-                */
+                    /* 
+                       Create a unique tag for each call, and preserve it, as it contains
+                       valuable metadata that we refer to when the main notification thread emits
+                       a tag corresponding to a function call.
+                    */
 
-                Tag rpcTag = new Tag();
-                rpcTag.metadata[0] = 0xDE;
-                rpcTag.metadata[1] = cast(ubyte)i;
-                rpcTag.metadata[2] = cast(ubyte)threadIndex;
-                tagTable ~= rpcTag;
+                    Tag rpcTag = new Tag();
+                    rpcTag.metadata[0] = 0xDE;
+                    rpcTag.metadata[1] = cast(ubyte)numRegularFuncs;
+                    rpcTag.metadata[2] = cast(ubyte)threadIndex;
+                    rpcTag.metadata[4] = cast(ubyte)i;
+                    static if(hasUDA!(val, ClientStreaming) && hasUDA!(val, ServerStreaming)) {
+                        pragma(msg, remoteName ~ ": Client && Server");
+                        rpcTag.metadata[3] = 3;
+                        rpcTag.metadata[1] = cast(ubyte)numStream3Funcs;
+                        numStream3Funcs++;
+                    }
+                    else static if(hasUDA!(val, ClientStreaming)) {
+                        pragma(msg, remoteName ~ ": Client");
+                        rpcTag.metadata[3] = 2;
+                        rpcTag.metadata[1] = cast(ubyte)numStream2Funcs;
+                        numStream2Funcs++;
+                    }
+                    else static if(hasUDA!(val, ServerStreaming)) {
+                        pragma(msg, remoteName ~ ": Server");
+                        rpcTag.metadata[3] = 1;
+                        rpcTag.metadata[1] = cast(ubyte)numStream1Funcs;
+                        numStream1Funcs++;
+                    }
+                    else {
+                        numRegularFuncs++;
+                    }
 
-                /*
-                   Register the call to the server.
-                */
-                requestRegisteredCall(registeredMethods[remoteName],
+                    tagTable ~= rpcTag;
+
+                    /*
+                       Register the call to the server.
+                    */
+                    requestRegisteredCall(registeredMethods[remoteName],
                         &_call, &time, &_metadata,
                         &bytebuffer, cq, masterQueue,  
-                        rpcTag);
+                        tagTable[$ - 1]);
 
+
+                }();
             }
 
             /*
@@ -157,12 +314,16 @@ class Server
                     newTag = false;
 
                     debug writeln("New tag: ", newTag_index);
-                    if(newTag_index > _arr.keys.length) {
-                        writeln("Invalid..");
+                    /*
+                    if(newTag_index > _arr.keys.length - 1) {
                         continue;
                     }
+                    */
                     import std.string : fromStringz;
 
+
+                    Tag rpcTag = tagTable[newTag_indexInTagTable];
+                    writeln(rpcTag.metadata);
                     /*
                        Since the tag is for us, then that must mean
                        that the byte buffer is full of data transmitted
@@ -176,105 +337,122 @@ class Server
                     ubyte[] msgIn = cast(ubyte[])grpc_slice_to_c_string(slices).fromStringz;
                     ubyte[] protoOut;
 
-                    /* 
-                       We generated this array full of lambdas which would decode the message,
-                       then encode the message, provided ubyte[] arrays.
-                    */
                     Status userCall;
-                    try {
-                        userCall = _arr[_arr.keys[newTag_index]](serverInstance_, msgIn, protoOut); 
-                    } catch(Exception e) {
-                        userCall.code = GRPC_STATUS_INTERNAL;
-                        userCall.message = "Exception: " ~ e.msg;
+                    writeln("hello");
+
+                    void* method;
+                    
+
+
+                    if(rpcTag.metadata[3] == 3) {
+
                     }
+                    else if(rpcTag.metadata[3] == 2) {
+
+                    }
+                    else if(rpcTag.metadata[3] == 1) {
+//                        requestRegisteredCall(registeredMethods[_streamTable1.keys[newTag_index]],
+//                           &_call, &time, &_metadata,
+//                            &bytebuffer, cq, masterQueue,  
+//                            rpcTag);
+
+                        writeln("ServerStreaming..");
+                        writeln(newTag_index);
+                        string index = _streamTable1.keys[newTag_index];
+
+                        try {
+                            _streamTable1[index](serverInstance_, msgIn, _call, rpcTag);
+                        }
+                        catch(Exception e) {
+
+                        }
+
+                    }
+                    else if(rpcTag.metadata[3] == 0) {
+                         requestRegisteredCall(registeredMethods[_arr.keys[newTag_index]],
+                            &_call, &time, &_metadata,
+                            &bytebuffer, cq, masterQueue,  
+                            rpcTag);
+                       
+                        
+                        /* 
+                           We generated this array full of lambdas which would decode the message,
+                           then encode the message, provided ubyte[] arrays.
+                        */
+                        try {
+                            userCall = _arr[_arr.keys[newTag_index]](serverInstance_, msgIn, protoOut); 
+                        } catch(Exception e) {
+                            userCall.code = GRPC_STATUS_INTERNAL;
+                            userCall.message = "Exception: " ~ e.msg;
+                        }
+
+                        grpc_op[] op_1;
+                        {
+                            int closed;
+                            grpc_op op;
+                            op.op = GRPC_OP_RECV_CLOSE_ON_SERVER;
+                            op.data.recv_close_on_server.cancelled = &closed;
+                            op_1 ~= op;
+                            auto status = grpc_call_start_batch(_call, op_1.ptr, op_1.length, &rpcTag, null);
+                            if(status == GRPC_CALL_OK) {
+                                cq.next(rpcTag, 1.msecs);
+                                writeln("OK");
+                            } 
+
+                            if(closed) {
+                                continue;
+                            }
+                        }
+                    
+                        /*
+                           We send the full message here,
+                           and the status from the function call.
+                        */
+
+                        grpc_op[3] op_2;
+                        {
+                            op_2[0].op = GRPC_OP_SEND_INITIAL_METADATA;
+    //                                op_2[2].flags = 0x00000002u;
+
+                            op_2[1].op = GRPC_OP_SEND_MESSAGE;
+                            grpc_slice msg = grpc_slice_ref(grpc_slice_from_copied_buffer(cast(const(char*))protoOut, protoOut.length));
+                            grpc_byte_buffer* bytebuf = grpc_raw_byte_buffer_create(&msg, 1);
+                            op_2[1].data.send_message.send_message = bytebuf;
 
 
-                    /*
-                       Re-register this call, so we get future notifications if it is
-                       present.
-                    */
+                            op_2[2].op = GRPC_OP_SEND_STATUS_FROM_SERVER;
+                            grpc_slice statusDetails;
+                            if(userCall.code != 0) {
+                                op_2[2].data.send_status_from_server.status = cast(grpc_status_code)userCall.code;
+                                if(userCall.message != "") {
+                                    import std.string : toStringz;
+                                    statusDetails = grpc_slice_ref(grpc_slice_from_copied_buffer(userCall.message.toStringz, userCall.message.length));
+                                    op_2[2].data.send_status_from_server.status_details = &statusDetails;
+                                }
+                            }
+                            else {
+                                op_2[2].data.send_status_from_server.status = GRPC_STATUS_OK;
+                            }
+                            int tag = 1;
 
-                    requestRegisteredCall(registeredMethods[_arr.keys[newTag_index]],
-                        &_call, &time, &_metadata,
-                        &bytebuffer, cq, masterQueue,  
-                        rpcTag);
+                            auto status = grpc_call_start_batch(_call, op_2.ptr, op_2.length, &rpcTag, null);
+                            if(status == GRPC_CALL_OK) {
+                                cq.next(rpcTag, 1.msecs);
+                            }
 
-                    /*
-                       Free the allocated memory that the reader has alloc'd
-                    */
+                            grpc_slice_unref(msg);
+
+                            if(userCall.code != 0) {
+                                if(userCall.message != "") {
+                                    grpc_slice_unref(statusDetails);
+                                }
+                            }
+                        }
+                    }
 
                     grpc_byte_buffer_reader_destroy(&reader);
-
-
-                    /*
-                       Close the receive side on the server
-                       Stage 1 of sending back a reply.
-                    */
-
-                    grpc_op[] op_1;
-                    {
-                        int closed;
-                        grpc_op op;
-                        op.op = GRPC_OP_RECV_CLOSE_ON_SERVER;
-                        op.data.recv_close_on_server.cancelled = &closed;
-                        op_1 ~= op;
-                        auto status = grpc_call_start_batch(_call, op_1.ptr, op_1.length, &rpcTag, null);
-                        if(status == GRPC_CALL_OK) {
-                            cq.next(rpcTag, 1.msecs);
-                            writeln("OK");
-                        } 
-
-                        if(closed) {
-                            continue;
-                        }
-                    }
-                    
-                    /*
-                       We send the full message here,
-                       and the status from the function call.
-                    */
-
-                    grpc_op[3] op_2;
-                    {
-                        op_2[0].op = GRPC_OP_SEND_INITIAL_METADATA;
-//                                op_2[2].flags = 0x00000002u;
-
-                        op_2[1].op = GRPC_OP_SEND_MESSAGE;
-                        grpc_slice msg = grpc_slice_ref(grpc_slice_from_copied_buffer(cast(const(char*))protoOut, protoOut.length));
-                        grpc_byte_buffer* bytebuf = grpc_raw_byte_buffer_create(&msg, 1);
-                        op_2[1].data.send_message.send_message = bytebuf;
-
-
-                        op_2[2].op = GRPC_OP_SEND_STATUS_FROM_SERVER;
-                        grpc_slice statusDetails;
-                        if(userCall.code != 0) {
-                            op_2[2].data.send_status_from_server.status = cast(grpc_status_code)userCall.code;
-                            if(userCall.message != "") {
-                                import std.string : toStringz;
-                                statusDetails = grpc_slice_ref(grpc_slice_from_copied_buffer(userCall.message.toStringz, userCall.message.length));
-                                op_2[2].data.send_status_from_server.status_details = &statusDetails;
-                            }
-                        }
-                        else {
-                            op_2[2].data.send_status_from_server.status = GRPC_STATUS_OK;
-                        }
-                        int tag = 1;
-
-                        auto status = grpc_call_start_batch(_call, op_2.ptr, op_2.length, &rpcTag, null);
-                        if(status == GRPC_CALL_OK) {
-                            cq.next(rpcTag, 1.msecs);
-                        }
-
-                        grpc_slice_unref(msg);
-
-                        if(userCall.code != 0) {
-                            if(userCall.message != "") {
-                                grpc_slice_unref(statusDetails);
-                            }
-                        }
-                    }
+                    Thread.sleep(1.msecs);
                 }
-                Thread.sleep(1.msecs);
             }
         }
 
@@ -286,30 +464,61 @@ class Server
             alias parent = BaseTypeTuple!T[1];
             pragma(msg, "gRPC (" ~ fullyQualifiedName!T ~ ")");
             static foreach(i, val; getSymbolsByUDA!(parent, RPC)) {
-                enum remoteName = getUDAs!(val, RPC)[0].methodName;
-                import std.conv : to;
-                pragma(msg, "RPC (" ~ to!string(i) ~ "): " ~ fullyQualifiedName!(val));
-                pragma(msg, "\tRemote: " ~ remoteName);
+                () {
+                    enum remoteName = getUDAs!(val, RPC)[0].methodName;
+                    import std.conv : to;
+                    pragma(msg, "RPC (" ~ to!string(i) ~ "): " ~ fullyQualifiedName!(val));
+                    pragma(msg, "\tRemote: " ~ remoteName);
 
-                mixin("import " ~ moduleName!val ~ ";");
-                _arr[remoteName] = (T obj, ubyte[] _in, ref ubyte[] _out) {
-                    Status stat;
+                    mixin("import " ~ moduleName!val ~ ";");
 
-                    import google.protobuf;
+                    static if(hasUDA!(val, ClientStreaming) && hasUDA!(val, ServerStreaming)) {
+                        pragma(msg, "\tClient <- (stream) -> Server");
+                        //3
+                    }
+                    else static if(hasUDA!(val, ClientStreaming)) {
+                        pragma(msg, "\tClient (stream) -> Server");
+                        //2 
+                    }
+                    else static if(hasUDA!(val, ServerStreaming)) {
+                        pragma(msg, "\tClient <- (stream) Server");
+                        _streamTable1[remoteName] = (T obj, ubyte[] _in, grpc_call* call, ref Tag tag) {
+                            Status s;
+                            import google.protobuf;
 
-                    Parameters!val[0] funcIn = _in.fromProtobuf!(Parameters!val[0]);
-                    Parameters!val[1] funcOut;
-                    import std.array;
+                            Parameters!val[0] funcIn = _in.fromProtobuf!(Parameters!val[0]);
 
+                            mixin("auto writer = new " ~ __traits(identifier, Parameters!val[1]) ~ "!(" ~ __traits(identifier, TemplateArgsOf!(Parameters!val[1])[0]) ~ ")(cq, call, tag);");
+//                            auto writer = new Parameters!(val[1])(cq, call, tag);
+                            writer.start();
 
-                    mixin("stat = obj." ~ __traits(identifier, val) ~ "(funcIn, funcOut);");
+                            mixin("s = obj." ~ __traits(identifier, val) ~ "(funcIn, writer);");
 
-                    _out = funcOut.toProtobuf.array;
+                            writer.finish(s);
+                        };
+                        //1 
+                    }
+                    else {
+                        _arr[remoteName] = (T obj, ubyte[] _in, ref ubyte[] _out) {
+                            Status stat;
 
-                    return stat;
-                };
+                            import google.protobuf;
 
-                registeredMethods[remoteName] = registerMethod(remoteName, "", GRPC_SRM_PAYLOAD_READ_INITIAL_BYTE_BUFFER, 0);
+                            Parameters!val[0] funcIn = _in.fromProtobuf!(Parameters!val[0]);
+                            Parameters!val[1] funcOut;
+                            import std.array;
+                            import core.sync.event;
+
+                            mixin("stat = obj." ~ __traits(identifier, val) ~ "(funcIn, funcOut);");
+
+                            _out = funcOut.toProtobuf.array;
+
+                            return stat;
+                        };
+                    }
+
+                    registeredMethods[remoteName] = registerMethod(remoteName, "", GRPC_SRM_PAYLOAD_READ_INITIAL_BYTE_BUFFER, 0);
+                }();
             }
 
             servicesDoneStage1++;
