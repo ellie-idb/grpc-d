@@ -1,0 +1,14 @@
+name "grpcd"
+description "gRPC for DLang"
+authors "Harrison Ford"
+copyright "Copyright © 2019, Harrison Ford"
+license "proprietary"
+dependency "protobuf" version="~>0.5.4"
+dependency "async" version="~>0.1.34"
+dependency "fearless" version="~>0.0.2"
+libs "grpc"
+
+configuration "library" {
+	targetType "library"
+}
+
