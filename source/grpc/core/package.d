@@ -1,6 +1,20 @@
 module grpc.core;
 import std.string : fromStringz;
 import grpc.core.grpc_preproc;
+public import grpc.core.core;
+
+template assertNotReady() {
+    bool assertNotReady = () { assert(grpcReady(), "Assertion: gRPC has not been initialized"); return true; }();
+}
+    
+
+bool grpcReady() {
+    if(grpc_is_initialized() == true) {
+        return true;
+    }
+
+    return false;
+}
 
 void init() {
 	grpc_init();

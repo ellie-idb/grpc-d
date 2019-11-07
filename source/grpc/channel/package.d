@@ -1,6 +1,6 @@
 module grpc.channel;
 import grpc.core.grpc_preproc;
-import grpc.core.cq;
+import grpc.common.cq;
 
 class Channel {
 	private {

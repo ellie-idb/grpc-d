@@ -1,8 +1,9 @@
-module grpc.core.cq;
+module grpc.common.cq;
 import grpc.core.grpc_preproc;
 import std.typecons;
 import grpc.core.tag;
 import fearless;
+import grpc.core;
 public import core.time;
 
 //queue ok/ok type
@@ -22,6 +23,10 @@ gpr_timespec durtotimespec(Duration time) {
     nsecs.split!("seconds", "nsecs")(t.tv_sec, t.tv_nsec);
     
     return t;
+}
+
+Duration timespectodur(gpr_timespec time) {
+    return time.tv_sec.seconds + time.tv_nsec.nsecs;
 }
 
 import core.thread;
@@ -45,6 +50,7 @@ import std.traits;
 
 struct CompletionQueuePtr {
     grpc_completion_queue *cq;
+    alias cq this;
 }
 
 class CompletionQueue(string T) 
@@ -167,6 +173,8 @@ class CompletionQueue(string T)
 
 
     this(grpc_completion_queue* _ptr) {
+        mixin assertNotReady;
+
         _cq = new Exclusive!CompletionQueuePtr(_ptr);
     }
 
