@@ -4,32 +4,32 @@ import grpc.core.grpc_preproc;
 
 string slice_to_string(grpc_slice slice) {
     import std.string : fromStringz;
-    const(char*) slice_c = grpc_slice_to_c_string(slice);
 
-    string ret = slice_c.fromStringz.dup;
-    gpr_free(cast(void*)slice_c);
-
-    return ret;
+    return slice_to_type!string(slice);
 }
 
 T slice_to_type(T)(grpc_slice slice) 
-if(__traits(isPOD, T) && __traits(compiles, cast(T)"123")) {
+if(__traits(isPOD, T) && __traits(compiles, cast(T)[0x01, 0x02])) {
     import std.string : fromStringz;
-    string o = slice_to_string(slice);
-    return cast(T)o;
-}
+    const(char*) slice_c = grpc_slice_to_c_string(slice);
 
+    ubyte[] data = cast(ubyte[])slice_c[0..slice.data.inlined.length].dup;
+
+    T o = cast(T)data;
+
+    gpr_free(cast(void*)slice_c);
+
+    return o;
+}
 
 string byte_buffer_to_string(grpc_byte_buffer* bytebuf) {
         import std.stdio;
-        grpc_byte_buffer* a = grpc_byte_buffer_copy(bytebuf);
         grpc_byte_buffer_reader reader;
-        grpc_byte_buffer_reader_init(&reader, a);
-
+        grpc_byte_buffer_reader_init(&reader, bytebuf);
         grpc_slice slices = grpc_byte_buffer_reader_readall(&reader);
-        debug writeln(reader.current.index);
+
         string _s = slice_to_string(slices);
-        debug writeln(_s.length);
+
         grpc_byte_buffer_reader_destroy(&reader);
 
         grpc_slice_unref(slices);
