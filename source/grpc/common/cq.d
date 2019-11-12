@@ -34,15 +34,27 @@ import std.parallelism;
 
 grpc_event getNext(bool* started, Exclusive!CompletionQueuePtr* cq, gpr_timespec _dead) {
     grpc_event t_;
-    auto ptr = cq.lock();
+
+    grpc_completion_queue* ptr;
+    { 
+        auto _ptr = cq.lock();
+        ptr = _ptr.cq;
+    }
+
     *started = true;
-    t_ = grpc_completion_queue_next(ptr.cq, _dead, null);
+    t_ = grpc_completion_queue_next(ptr, _dead, null);
     return t_;
 }
 grpc_event getTagNext(bool* started, Exclusive!CompletionQueuePtr* cq, void* tag, gpr_timespec _dead) {
     *started = true;
-    auto ptr = cq.lock();
-    grpc_event t = grpc_completion_queue_pluck(ptr.cq, tag, _dead, null);
+
+    grpc_completion_queue* ptr;
+    { 
+        auto _ptr = cq.lock();
+        ptr = _ptr.cq;
+    }
+
+    grpc_event t = grpc_completion_queue_pluck(ptr, tag, _dead, null);
     return t;
 }
 
@@ -59,12 +71,21 @@ class CompletionQueue(string T)
     private { 
         TaskPool asyncAwait;
         Exclusive!CompletionQueuePtr* _cq;
+
+        mixin template ptrNoLock() {
+            grpc_completion_queue* cq = (){ return _cq.lock().cq; }();
+        }
+
+
     }
 
-    auto ptr() {
-        synchronized { 
-            return _cq.lock();
-        }
+    bool locked() {
+        return _cq.isLocked;
+    }
+
+    auto ptr(string file = __FILE__) {
+        import std.stdio;
+        return _cq.lock();
     }
 
     static if(T == "Pluck") {
@@ -72,9 +93,8 @@ class CompletionQueue(string T)
             gpr_timespec t = durtotimespec(time);
             grpc_event _evt;
 
-            auto ptr = ptr();
-
-            _evt = grpc_completion_queue_pluck(ptr.cq, &tag, t, null); 
+            mixin ptrNoLock;
+            _evt = grpc_completion_queue_pluck(cq, &tag, t, null); 
 
             return _evt;
         }
@@ -109,8 +129,10 @@ class CompletionQueue(string T)
                 }
             }
             */
-            auto ptr = ptr();
-            _evt = grpc_completion_queue_next(ptr.cq, t, null);
+
+            mixin ptrNoLock;
+            
+            _evt = grpc_completion_queue_next(cq, t, null);
 
             /*
             Fiber fiber = new Fiber(() => awaitNext(_evt, t)); 
@@ -152,11 +174,9 @@ class CompletionQueue(string T)
     }
 
     void shutdown() {
-        auto ptr = _cq.lock();
-        grpc_completion_queue_shutdown(ptr.cq);
+        mixin ptrNoLock;
+        grpc_completion_queue_shutdown(cq);
 //        grpc_event evt = next(dur!"msecs"(100));
-
-        destroy(ptr);
 
         grpc_event evt;
         while((evt.type == GRPC_QUEUE_TIMEOUT)) {
@@ -167,10 +187,9 @@ class CompletionQueue(string T)
                 evt = next(dur!"msecs"(100));
             }
             import std.stdio;
-            writeln(evt.type != GRPC_QUEUE_TIMEOUT);
+            debug writeln(evt.type != GRPC_QUEUE_TIMEOUT);
         }
     }
-
 
     this(grpc_completion_queue* _ptr) {
         mixin assertNotReady;

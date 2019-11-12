@@ -20,9 +20,7 @@ class Metadata {
     }
 
     auto borrow() {
-        synchronized {
-            return _metadata.lock();
-        }
+        return _metadata.lock();
     }
 
     @property string key() {
@@ -53,9 +51,7 @@ class MetadataArray {
     }
 
     auto borrow() {
-        synchronized {
-            return _metadata.lock();
-        }
+        return _metadata.lock();
     }
 
     @property ulong capacity() {

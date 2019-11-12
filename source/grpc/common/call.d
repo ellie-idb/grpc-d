@@ -24,9 +24,7 @@ class CallDetails {
     }
 
     auto borrow() {
-        synchronized {
-            return _details.lock();
-        }
+        return _details.lock();
     }
 
     @property string method() {
@@ -79,10 +77,44 @@ class RemoteCall {
     }
 
     auto borrow() {
-        synchronized {
-            return _call.lock();
-        }
+        return _call.lock();
     }
+
+    grpc_call_error requestGenericCall(ref Tag _tag, Exclusive!ServerPtr* server_) {
+        import std.stdio;
+        auto server_ptr = server_.lock();
+        debug writeln("Got server lock");
+
+        auto method_cq = _registeredCq.ptr();
+        debug writeln("Got method lock");
+
+        debug writeln("Attempting to lock global");
+        auto global_cq = _globalCq.ptr();
+
+        debug writeln("Got global lock");
+
+        grpc_call** call;
+        {
+            auto __call = _call.lock();
+            call = &__call._call;
+        }
+        debug writeln("Got grpc_call* lock");
+
+        auto data = _data.borrow();
+        debug writeln("Got byte buffer");
+
+        auto callDetails = _callDetails.borrow();
+        debug writeln("Got call data lock");
+
+        auto metadata = _metadataArray.borrow();
+        debug writeln("Got metadata lock");
+
+        debug writeln(_tag.metadata);
+
+        debug writeln("Registering..");
+        return grpc_server_request_call(server_ptr, call, &callDetails.details, &metadata.metadata, method_cq, global_cq, cast(void*)_tag);
+    }
+
 
     grpc_call_error requestCall(void* _method, ref Tag _tag, Exclusive!ServerPtr* server_) {
         import std.stdio;
@@ -92,24 +124,33 @@ class RemoteCall {
         auto method_cq = _registeredCq.ptr();
         debug writeln("Got method lock");
 
+        debug writeln("Attempting to lock global");
         auto global_cq = _globalCq.ptr();
+
         debug writeln("Got global lock");
 
-        auto call = _call.lock();
+        auto __call = _call.lock();
         debug writeln("Got grpc_call* lock");
 
         auto data = _data.borrow();
         debug writeln("Got byte buffer");
 
         auto callDetails = _callDetails.borrow();
+        debug writeln("Got call data lock");
 
         auto metadata = _metadataArray.borrow();
+        debug writeln("Got metadata lock");
 
-        writeln(_tag.metadata);
+        debug writeln(_tag.metadata);
 
-        return grpc_server_request_registered_call(server_ptr,
-                _method, &call._call, &deadline, &metadata.metadata,
+        debug writeln("Registering..");
+
+        grpc_call_error error = grpc_server_request_registered_call(server_ptr,
+                cast(void*)_method, &__call._call, &deadline, &metadata.metadata,
                 &data._buf, method_cq, global_cq, &_tag);
+
+
+        return error;
     }
 
     @property ByteBuffer data() {

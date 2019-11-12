@@ -39,6 +39,10 @@ class SendInitialMetadataOp : RemoteOp {
         _data = data;
     }
 
+    this() {
+
+    }
+
 }
 
 class SendMessageOp : RemoteOp {
@@ -98,6 +102,11 @@ class SendStatusFromServerOp : RemoteOp {
     this(Metadata[] trailing_metadata, grpc_status_code code, string details) {
         _details = string_to_slice(details);
         _trailing_metadata = trailing_metadata;
+        _status = code;
+    }
+
+    this(grpc_status_code code, string details) {
+        _details = string_to_slice(details);
         _status = code;
     }
 
@@ -213,19 +222,21 @@ class BatchCall {
     
     import grpc.core.tag;
 
-    grpc_call_error run(ref Tag _tag) {
+    import core.time;
+    grpc_call_error run(ref Tag _tag, Duration d = 1.msecs) {
         assert(sanityCheck(), "failed sanity check");
 
+        auto call = _call.borrow();
         grpc_op[] _ops;
 
         foreach(op; ops) {
             _ops ~= op.value();
         }
 
-        auto status = grpc_call_start_batch(_call.borrow()._call, _ops.ptr, _ops.length, &_tag, null);  
+        auto status = grpc_call_start_batch(call, _ops.ptr, _ops.length, &_tag, null);  
         if(status == GRPC_CALL_OK) {
             import core.time;
-            _call.cq.next(_tag, 1.msecs);
+            _call.cq.next(_tag, d);
         }
 
         return status;
@@ -236,7 +247,8 @@ class BatchCall {
         ops = ops.init;
     }
 
-    this() {
+    this(ref RemoteCall call) {
+        _call = call;
 
     }
 
