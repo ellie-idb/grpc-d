@@ -7,17 +7,16 @@ import google.rpc.status;
 import grpc.core.tag;
 import grpc.common.cq;
 import grpc.service.queue;
+import grpc.logger;
 
 //should/can be overridden by clients
 interface ServiceHandlerInterface {
     bool register(Exclusive!ServerPtr* server_);
     void addToQueue(Tag t);
     void stop();
-    int queueLength();
     int totalQueued();
     int totalServiced();
 }
-
 
 //
 /*
@@ -48,7 +47,6 @@ mixin template Reader(T) {
 
 }
 
-
 mixin template Writer(T) {
     static if(is(TemplateOf!T == void)) {
         alias output = T;
@@ -66,6 +64,8 @@ class Service(T) : ServiceHandlerInterface {
         Object queueLock = new Object;
         void*[string] registeredMethods;
 
+        CompletionQueue!"Next" globalCq;
+
         int[funcType] _funcCount;
 
         string[] methodNames;
@@ -74,7 +74,7 @@ class Service(T) : ServiceHandlerInterface {
         __gshared Exclusive!ServerPtr* _server;
         __gshared Tag[] _tagTable;
 
-        void function(T, ref RemoteCall, ref Tag)[string] _handlers;
+        void delegate(T, ref RemoteCall, ref Tag)[string] _handlers;
         immutable ulong _serviceId;
 
         enum funcType {
@@ -93,8 +93,10 @@ class Service(T) : ServiceHandlerInterface {
     class ServicerThread : Thread {
         this() {
             _run = true;
-            super(&run);
+
             serviceQueue = new Queue!Tag();
+
+            super(&run);
         }
 
         Queue!Tag serviceQueue;
@@ -102,42 +104,68 @@ class Service(T) : ServiceHandlerInterface {
 
     private:
         void run() {
-            while(_run) {
-                serviceQueue.notify();
-                {
-                    import std.stdio;
-                    Tag tag = serviceQueue.front;
-                    serviceQueue.popFront;
+           // grpc_init();
+            DEBUG("waiting on new events");
+            serviceQueue.notify();
+            {
+                Tag tag = serviceQueue.front;
+                serviceQueue.popFront;
 
-                    string remoteName = methodNames[tag.metadata[4]];
-                    debug writeln(remoteName);
+                
+                string remoteName = methodNames[tag.metadata[4]];
 
-                    try { 
-                        _handlers[remoteName](_serviceInstance, callData[remoteName], _tagTable[tag.metadata[4]]);
-                    } catch(Exception e) {
-                        import grpc.common.batchcall;
-                        import grpc.core.grpc_preproc;
+                auto oldTag = _tagTable[tag.metadata[4]];
+                DEBUG("CALL: ", remoteName, " ID?: ", tag.metadata[5]);
 
-                        writeln("CAUGHT EXCEPTION: ", e.msg);
+                DEBUG(_tagTable[tag.metadata[4]].metadata, " ", oldTag.metadata);
 
-                        BatchCall call = new BatchCall(callData[remoteName]);
-                        int cancelled = 0;
-                        call.addOp(new RecvCloseOnServerOp(&cancelled));
-                        call.addOp(new SendInitialMetadataOp());
-                        call.addOp(new SendStatusFromServerOp(GRPC_STATUS_INTERNAL, e.msg));
-                        call.run(_tagTable[tag.metadata[4]]);
-                    }
+                _tagTable[tag.metadata[4]] = _tagTable[tag.metadata[4]].dup();
 
-                    callData[remoteName].requestCall(registeredMethods[remoteName], _tagTable[tag.metadata[4]], _server);
-                    _totalServiced++;
+                DEBUG("tag duplicated");
+
+                _tagTable[tag.metadata[4]].metadata[5]++;
+
+                DEBUG("incrementing tags");
+
+                auto _oldCallData = callData[remoteName];
+
+                DEBUG("call data copied");
+
+                auto __cq = new CompletionQueue!"Pluck"();
+
+                DEBUG("new CompletionQueue instantiated");
+
+                callData[remoteName] = new RemoteCall(globalCq, __cq);
+                callData[remoteName].requestCall(registeredMethods[remoteName], _tagTable[tag.metadata[4]], _server);
+
+                DEBUG("registered fine!");
+
+                try { 
+                    _handlers[remoteName](_serviceInstance, _oldCallData, oldTag);
+                } catch(Exception e) {
+                    import grpc.common.batchcall;
+                    import grpc.core.grpc_preproc;
+
+                    ERROR("CAUGHT EXCEPTION: ", e.msg);
+
+                    BatchCall call = new BatchCall(_oldCallData);
+                    int cancelled = 0;
+                    call.addOp(new RecvCloseOnServerOp(&cancelled));
+                    call.addOp(new SendInitialMetadataOp());
+                    call.addOp(new SendStatusFromServerOp(GRPC_STATUS_INTERNAL, e.msg));
+                    call.run(oldTag);
                 }
 
+                DEBUG("func handler finished?");
+
+//                DEBUG("TAGS MATCH?: ", oldTag == _tagTable[tag.metadata[4]]);
+
+                _totalServiced++;
             }
+            _run = false;
         }
 
     }
-
-    ServicerThread mainThread;
 
     // function may be called by another thread other then the main() thread
     // make sure that doesnt muck up
@@ -150,12 +178,8 @@ class Service(T) : ServiceHandlerInterface {
         return _totalQueued;
     }
 
-    int queueLength() {
-        return mainThread.serviceQueue.count;
-    }
-    
     void stop() {
-        mainThread._run = false;
+//        mainThread._run = false;
     }
 
     void addToQueue(Tag t) {
@@ -163,12 +187,10 @@ class Service(T) : ServiceHandlerInterface {
             return;
         }
 
-        import std.stdio;
-        synchronized(queueLock) { 
-            mainThread.serviceQueue.put(t);
+        auto thread = new ServicerThread();
+        thread.start();
 
-            _totalQueued++;
-        }
+        thread.serviceQueue.put(t);
     }
 
 
@@ -191,8 +213,7 @@ class Service(T) : ServiceHandlerInterface {
 
                 enum remoteName = getUDAs!(val, RPC)[0].methodName;
                 
-                debug import std.stdio;
-                debug writeln("REGISTER: " ~ remoteName);
+                DEBUG("REGISTER: " ~ remoteName);
                 if(remoteName !in registeredMethods) {
                     assert(0, "Expected the method to be present in the registered table..");
                 }
@@ -220,19 +241,24 @@ class Service(T) : ServiceHandlerInterface {
                     rpcTag.metadata[2] = cast(ubyte)_serviceId;
                     rpcTag.metadata[4] = cast(ubyte)i;
                     _handlers[remoteName] = (T instance, ref RemoteCall data, ref Tag _tag) {
-                            auto callMeta = callData[remoteName];
+                            DEBUG("entered func body for ", remoteName);
                             Status stat;
 
-                            ServerReader!(input) reader = new ServerReader!(input)(callData[remoteName], _tag);
 
-                            ServerWriter!(output) writer = new ServerWriter!(output)(callData[remoteName], _tag);
+                            ServerReader!(input) reader = new ServerReader!(input)(data, _tag);
+
+                            DEBUG("Created read stream");
+
+                            ServerWriter!(output) writer = new ServerWriter!(output)(data, _tag);
+
+                            DEBUG("created write stream");
 
 
                             input funcIn;
                             output funcOut;
-                            debug writeln("func call: ", remoteName);
+                            DEBUG("func call: ", remoteName);
                             static if(hasUDA!(val, ClientStreaming) == 0 && hasUDA!(val, ServerStreaming) == 0) {
-                                debug writeln("func call: regular");
+                                DEBUG("func call: regular");
                                 writer.start();
 
                                 auto r = reader.read(1);
@@ -240,32 +266,50 @@ class Service(T) : ServiceHandlerInterface {
                                 r.popFront;
 
                                 mixin("stat = instance." ~ __traits(identifier, val) ~ "(funcIn, funcOut);");
+                                DEBUG("writing out!");
                                 writer.write(funcOut);
                             }
                             else static if(hasUDA!(val, ClientStreaming) && hasUDA!(val, ServerStreaming)) {
-                                debug writeln("func call: bidi");
+                                DEBUG("func call: bidi");
 
                                 mixin("stat = instance." ~ __traits(identifier, val) ~ "(reader, writer);");
                             }
                             else static if(hasUDA!(val, ClientStreaming)) {
-                                debug writeln("func call: client streaming");
+                                DEBUG("func call: client streaming");
+
+                                DEBUG("calling..");
                                 mixin("stat = instance." ~ __traits(identifier, val) ~ "(reader, funcOut);");
+
+                                DEBUG("CLIENT STREAMING DONE");
                                 writer.start();
                                 writer.write(funcOut);
                             } 
                             else static if(hasUDA!(val, ServerStreaming)) {
-                                debug writeln("func call: server streaming");
+                                DEBUG("func call: server streaming");
                                 auto r = reader.read(1);
                                 funcIn = r.front;
                                 r.popFront;
+                                DEBUG("OK!");
 
                                 writer.start();
+                                DEBUG("calling func..");
                                 mixin("stat = instance." ~ __traits(identifier, val) ~ "(funcIn, writer);");
                             }
 
-                            debug writeln("func call: writing");
+                            import grpc.common.batchcall;
+
+                            DEBUG("done with func.. RecvClose");
+/*
+                            BatchCall batch = new BatchCall(data);
+                            int cancelled = 0;
+                            batch.addOp(new RecvCloseOnServerOp(&cancelled));
+                            auto _s = batch.run(_tag, 1.msecs);
+                            */
+
+
+                            DEBUG("func call: writing");
                             writer.finish(stat);
-                            debug writeln("func call: done");
+                            DEBUG("func call: done");
 
                     };
 
@@ -310,6 +354,8 @@ class Service(T) : ServiceHandlerInterface {
         registeredMethods = methodTable.dup;
         _serviceId = serviceId;
 
+        globalCq = cq;
+
         foreach(method; methodTable.keys) {
             auto _cq = new CompletionQueue!"Pluck"();
             callData[method] = new RemoteCall(cq, _cq);
@@ -322,9 +368,9 @@ class Service(T) : ServiceHandlerInterface {
             _funcCount[STREAM_CLIENT_SERVER] = 0;
         }
 
-        mainThread = new ServicerThread();
-        mainThread.isDaemon = true;
-        mainThread.start();
+//        mainThread = new ServicerThread();
+//        mainThread.isDaemon = true;
+//        mainThread.start();
     }
         
 }

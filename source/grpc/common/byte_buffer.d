@@ -1,6 +1,7 @@
 module grpc.common.byte_buffer;
 import grpc.core.grpc_preproc;
 import grpc.core.alloc;
+import grpc.logger;
 import fearless;
 
 struct ByteBufferWrapper {
@@ -17,7 +18,7 @@ class ByteBuffer {
     
     auto borrow() {
         import std.stdio;
-        debug writeln("bf: ", _buf.isLocked);
+        DEBUG("bf: ", _buf.isLocked);
         return _buf.lock();
     }
 

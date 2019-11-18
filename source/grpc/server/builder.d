@@ -2,6 +2,15 @@ module grpc.server.builder;
 import grpc.core.grpc_preproc;
 import grpc.server;
 
+import std.datetime;
+struct ServerOptions {
+    Duration connectionTimeout;
+    uint headerTableSize;
+    int initialConnectionWindowSize;
+    int initialWindowSize;
+}
+
+
 class ServerBuilder {
     private {
         ushort _port;
