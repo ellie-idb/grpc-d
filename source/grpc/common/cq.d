@@ -1,38 +1,22 @@
 module grpc.common.cq;
-import grpc.core.grpc_preproc;
+import interop.headers;
 import std.typecons;
 import grpc.core.tag;
 import fearless;
-import grpc.core;
 public import core.time;
+public import grpc.core.utils;
+import grpc.logger;
 
 //queue ok/ok type
 alias NextStatus = Tuple!(bool, bool);
 
 
 // TODO: add mutexes 
-gpr_timespec durtotimespec(Duration time) {
-    gpr_timespec t;
-    t.clock_type = GPR_CLOCK_MONOTONIC; 
-    MonoTime curr = MonoTime.currTime;
-    auto _time = curr + time;
-    import std.stdio;
-
-    auto nsecs = ticksToNSecs(_time.ticks).nsecs;
-
-    nsecs.split!("seconds", "nsecs")(t.tv_sec, t.tv_nsec);
-    
-    return t;
-}
-
-Duration timespectodur(gpr_timespec time) {
-    return time.tv_sec.seconds + time.tv_nsec.nsecs;
-}
 
 import core.thread;
 import std.parallelism;
 
-grpc_event getNext(bool* started, Exclusive!CompletionQueuePtr* cq, gpr_timespec _dead) {
+grpc_event getNext(Exclusive!CompletionQueuePtr* cq, gpr_timespec _dead) {
     grpc_event t_;
 
     grpc_completion_queue* ptr;
@@ -41,10 +25,10 @@ grpc_event getNext(bool* started, Exclusive!CompletionQueuePtr* cq, gpr_timespec
         ptr = _ptr.cq;
     }
 
-    *started = true;
     t_ = grpc_completion_queue_next(ptr, _dead, null);
     return t_;
 }
+
 grpc_event getTagNext(bool* started, Exclusive!CompletionQueuePtr* cq, void* tag, gpr_timespec _dead) {
     *started = true;
 
@@ -66,7 +50,7 @@ struct CompletionQueuePtr {
 }
 
 class CompletionQueue(string T) 
-    if(T == "Next" || T == "Pluck") 
+    if(T == "Next" || T == "Pluck" || T == "Callback") 
 {
     private { 
         TaskPool asyncAwait;
@@ -94,16 +78,18 @@ class CompletionQueue(string T)
         return __cq;
     }
 
+
+
     static if(T == "Pluck") {
-        grpc_event next(ref Tag tag, Duration time) {
-            gpr_timespec t = durtotimespec(time);
-            grpc_event _evt;
+        auto next(ref Tag tag, Duration time) {
+            auto evt = async!(() {
+                gpr_timespec t = durtotimespec(time);
+                auto cq = _cq.lock();
+                _evt = grpc_completion_queue_pluck(cq, &tag, t, null); 
 
-            auto cq = _cq.lock();
+            });
 
-            _evt = grpc_completion_queue_pluck(cq, &tag, t, null); 
-
-            return _evt;
+            return evt;
         }
 
         auto asyncNext(ref Tag tag, Duration time) {
@@ -121,44 +107,13 @@ class CompletionQueue(string T)
         }
 
     }
-    static if(T == "Next") {
-        grpc_event next(Duration time) {
-            gpr_timespec t = durtotimespec(time);
-            grpc_event _evt;
-
-            /*
-            void awaitNext(ref grpc_event t, gpr_timespec deadline) {
-                while(true) {
-                    assert(cq != null, "cq was null");
-                    import std.stdio;
-                    t = grpc_completion_queue_next(cq, deadline, null);
-                    Fiber.yield();
-                }
-            }
-            */
-
-            auto cq = __cq;
-            
-            _evt = grpc_completion_queue_next(cq, t, null);
-
-            /*
-            Fiber fiber = new Fiber(() => awaitNext(_evt, t)); 
-            fiber.call();
-            */
-            
-            return _evt;
-        }
-
-        auto asyncNext(Duration time) {
+    static if(T == "Next" || T == "Callback") {
+        auto next(Duration time) {
             gpr_timespec deadline = durtotimespec(time);
-            bool started;
+            auto evt = task!getNext(_cq, deadline); 
+            evt.executeInNewThread();
 
-            auto task = task!getNext(&started, _cq, deadline); 
-            asyncAwait.put(task);
-            while(!started) {
-            }
-
-            return task;
+            return evt;
         }
     }
 
@@ -166,19 +121,24 @@ class CompletionQueue(string T)
         CompletionQueuePtr _c_cq;
         static if(T == "Pluck") {
             _c_cq.cq = grpc_completion_queue_create_for_pluck(null);
-            asyncAwait = new TaskPool(6);
         }
 
         static if(T == "Next") {
             _c_cq.cq = grpc_completion_queue_create_for_next(null);
-            asyncAwait = new TaskPool(1);
         }
+
+        static if(T == "Callback") {
+            static extern(C) void shutdown(grpc_experimental_completion_queue_functor* next, int status) {
+
+            }
+            _c_cq.cq = grpc_completion_queue_create_for_callback(cast(grpc_experimental_completion_queue_functor*)&shutdown, null);
+        }
+
+        assert(_c_cq.cq);
 
         __cq = _c_cq.cq;
 
         _cq = new Exclusive!CompletionQueuePtr(_c_cq.cq);
-
-        asyncAwait.isDaemon = true;
 
     }
 
@@ -187,21 +147,31 @@ class CompletionQueue(string T)
         grpc_completion_queue_shutdown(cq);
 //        grpc_event evt = next(dur!"msecs"(100));
 
-        grpc_event evt;
-        while((evt.type == GRPC_QUEUE_TIMEOUT)) {
+
+        while(true) {
             Tag tag;
             static if(T == "Pluck") {
-                evt = next(tag, dur!"msecs"(100));
-            } else {
-                evt = next(dur!"msecs"(100));
+                auto a = next(tag, dur!"msecs"(100));
+                grpc_event _evt = a.spinForce();
+                if(_evt.type == GRPC_QUEUE_TIMEOUT) {
+                    break;
+                }
+
+            } else static if (T == "Next") {
+                auto a = next(dur!"msecs"(100));
+                grpc_event _evt = a.spinForce();
+                if(_evt.type == GRPC_QUEUE_TIMEOUT) {
+                    break;
+                }
             }
             import std.stdio;
-            debug writeln(evt.type != GRPC_QUEUE_TIMEOUT);
         }
     }
 
     this(grpc_completion_queue* _ptr) {
-        mixin assertNotReady;
+
+        import core.memory;
+        GC.setAttr(cast(void*)this, GC.BlkAttr.NO_MOVE);
 
         _cq = new Exclusive!CompletionQueuePtr(_ptr);
     }

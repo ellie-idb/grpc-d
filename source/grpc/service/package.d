@@ -1,20 +1,24 @@
 module grpc.service;
 import core.thread;
 import fearless;
-import grpc.server : ServerPtr;
+import grpc.server;
 import grpc.common.call;
 import google.rpc.status;
 import grpc.core.tag;
 import grpc.common.cq;
 import grpc.service.queue;
 import grpc.logger;
+import grpc.core.gpr;
+import std.conv : to;
 
 //should/can be overridden by clients
 interface ServiceHandlerInterface {
-    bool register(Exclusive!ServerPtr* server_);
-    void addToQueue(Tag t);
+@safe:
+    bool register(ref Server);
+    void addToQueue(ref Tag t);
     void stop();
     int totalQueued();
+    bool kick(Tag*);
     int totalServiced();
 }
 
@@ -56,7 +60,99 @@ mixin template Writer(T) {
     }
 }
 
+class ServicerThread(T) : Thread {
+    this() {
+        super(&run);
+    }
+
+    void*[string] registeredMethods;
+    bool _run = true;
+    T _serviceInstance;
+    CompletionQueue!"Next"* _serviceCq;
+    CompletionQueue!"Next"* _globalCq;
+
+    Server* srv;
+    void delegate(T, ref RemoteCall, ref Tag) @safe [string] handlers;
+    __gshared Tag[] tagTable;
+
+private:
+    void run() {
+        _serviceInstance = new T();
+        import interop.headers;
+        while(_run) {
+            auto _item = _serviceCq.next(10.seconds);
+            auto item = _item.workForce();
+            
+            if(item.type == GRPC_OP_COMPLETE) {
+                DEBUG("Queue kicked");
+                RemoteCall* call = cast(RemoteCall*)item.tag;
+                DEBUG("Pulled ptr: ", item.tag);
+                if(call is null) {
+                    ERROR("service cq received an invalid call ptr");
+                    return;
+                }
+                
+                if(call.metadata is null) {
+                    ERROR("metadata null, cannot proceed");
+                    return;
+                }
+
+                DEBUG(call.metadata.count);
+                auto arr = *call.metadata;
+
+                for(int i = 0; i < arr.length; i++) {
+                    try { 
+                        DEBUG(arr[i].key, ": ", arr[i].value);
+                    } catch(Exception e) {
+                        ERROR("caught an exception: ", e.msg);
+                        return;
+                    } catch(Error e) {
+                        ERROR("caught an error: ", e.msg);
+                        return;
+                    }
+                }
+
+                if(arr.length != 3) {
+                    DEBUG("metadata was not to size");
+                    return;
+                }
+                string sym = arr[1].value;
+                size_t tag = to!size_t(arr[2].value);
+                DEBUG("got call id: {'", arr[1].key, "': '", arr[1].value, "'}");
+                DEBUG("got tag id: ", tag);
+
+
+                try {
+                    handlers[sym](_serviceInstance, *call, tagTable[tag]); 
+                } catch(Exception e) {
+                    ERROR("bleh");
+                }
+
+                RemoteCall* newCall = RemoteCall(*_globalCq, *_serviceCq);
+
+                tagTable[tag].objectPtr = cast(void*)newCall;
+
+                newCall.requestCall(registeredMethods[sym], tagTable[tag], *srv);
+
+
+                DEBUG("call ptr: ", call);
+                DEBUG("new call ptr: ", newCall);
+
+            }
+            else if(item.type == GRPC_QUEUE_SHUTDOWN) {
+                DEBUG("Queue nogo");
+                _run = false;
+            }
+            else {
+                DEBUG("Service queue waiting for events");
+            }
+        }
+    }
+}
+
+
 class Service(T) : ServiceHandlerInterface {
+@safe:
     import std.typecons;
     import std.traits;
 
@@ -65,13 +161,14 @@ class Service(T) : ServiceHandlerInterface {
         void*[string] registeredMethods;
 
         CompletionQueue!"Next" globalCq;
+        CompletionQueue!"Next" serviceCq;
 
         int[funcType] _funcCount;
 
         string[] methodNames;
 
-        __gshared RemoteCall[string] callData;
-        __gshared Exclusive!ServerPtr* _server;
+        shared(RemoteCall)*[string] callData;
+        shared(Server)* server;
         __gshared Tag[] _tagTable;
 
         void delegate(T, ref RemoteCall, ref Tag)[string] _handlers;
@@ -84,11 +181,15 @@ class Service(T) : ServiceHandlerInterface {
             STREAM_CLIENT_SERVER
         }
 
-        T _serviceInstance;
+        ServicerThread!T _servicer;
+
     }
 
     int _totalServiced;
     int _totalQueued;
+
+
+    /*
 
     class ServicerThread : Thread {
         this() {
@@ -166,10 +267,10 @@ class Service(T) : ServiceHandlerInterface {
         }
 
     }
+    */
 
     // function may be called by another thread other then the main() thread
     // make sure that doesnt muck up
-
     int totalServiced() {
         return _totalServiced;
     }
@@ -182,20 +283,175 @@ class Service(T) : ServiceHandlerInterface {
 //        mainThread._run = false;
     }
 
-    void addToQueue(Tag t) {
+    void addToQueue(ref Tag t) {
         if(t.metadata[0] != 0xDE) {
             return;
         }
 
-        auto thread = new ServicerThread();
-        thread.start();
+    }
 
-        thread.serviceQueue.put(t);
+    bool kick(Tag* tag) @trusted 
+    in {
+        assert(tag != null);
+    }
+    do {
+        if(!_servicer.isRunning()) {
+            DEBUG("servicer thread crashed");
+            _servicer.start();
+        }
+
+        string sym = callData.keys[tag.metadata[2]];
+        RemoteCall* call = cast(RemoteCall*)tag.objectPtr;
+        try { 
+            call.metadata.add("call-id", sym);
+            call.metadata.add("tag-id", to!string(tag.metadata[2])); 
+        } catch(Exception e) {
+            ERROR("got an exception: ", e.msg);
+            return false;
+        } catch(Error e) {
+            ERROR("got an error: ", e.msg);
+            return false;
+        }
+
+        DEBUG("kicking");
+
+        if(call.kick()) {
+            DEBUG("kicked");
+        } else {
+            DEBUG("failed to kick");
+        }
+
+        return true;
+    }
+
+
+    bool register(ref Server srv) {
+        alias parent = BaseTypeTuple!T[1];
+
+        () @trusted {
+            server = cast(shared(Server)*)&srv;
+        }();
+
+        static foreach(i, val; getSymbolsByUDA!(parent, RPC)) {
+            () @trusted {
+
+                enum remoteName = getUDAs!(val, RPC)[0].methodName;
+
+                import interop.headers;
+
+                auto callMeta = cast(RemoteCall*)callData[remoteName];
+                _tagTable.length++;
+                _tagTable[i].metadata[0] = cast(ubyte)0xFF;
+                _tagTable[i].metadata[1] = cast(ubyte)_serviceId;
+                _tagTable[i].metadata[2] = cast(ubyte)i;
+                _tagTable[i].objectPtr = cast(void*)callMeta;
+                import grpc.stream.server.reader;
+                import grpc.stream.server.writer;
+
+                import std.traits;
+                import std.meta;
+
+                mixin Reader!(Parameters!val[0]);
+
+                mixin Writer!(Parameters!val[1]);
+
+
+                _handlers[remoteName] = (T instance, ref RemoteCall data, ref Tag _tag) @trusted {
+                        Status stat;
+                        DEBUG("func body: ", remoteName);
+                        
+
+                        ServerReader!(input) reader = new ServerReader!(input)(data, _tag);
+                        ServerWriter!(output) writer = new ServerWriter!(output)(data, _tag);
+
+                        input funcIn;
+                        output funcOut;
+                        DEBUG("func call: ", remoteName);
+                        static if(hasUDA!(val, ClientStreaming) == 0 && hasUDA!(val, ServerStreaming) == 0) {
+                            DEBUG("func call: regular");
+                            writer.start();
+
+                            DEBUG("started read");
+
+                            auto r = reader.read(1);
+                            funcIn = r.front;
+                            r.popFront;
+
+                            mixin("stat = instance." ~ __traits(identifier, val) ~ "(funcIn, funcOut);");
+                            DEBUG("writing out!");
+                            writer.write(funcOut);
+                        }
+                        else static if(hasUDA!(val, ClientStreaming) && hasUDA!(val, ServerStreaming)) {
+                            DEBUG("func call: bidi");
+
+                            mixin("stat = instance." ~ __traits(identifier, val) ~ "(reader, writer);");
+                        }
+                        else static if(hasUDA!(val, ClientStreaming)) {
+                            DEBUG("func call: client streaming");
+
+                            DEBUG("calling..");
+                            mixin("stat = instance." ~ __traits(identifier, val) ~ "(reader, funcOut);");
+
+                            DEBUG("CLIENT STREAMING DONE");
+                            writer.start();
+                            writer.write(funcOut);
+                        } 
+                        else static if(hasUDA!(val, ServerStreaming)) {
+                            DEBUG("func call: server streaming");
+                            auto r = reader.read(1);
+                            funcIn = r.front;
+                            r.popFront;
+                            DEBUG("OK!");
+
+                            writer.start();
+                            DEBUG("calling func..");
+                            mixin("stat = instance." ~ __traits(identifier, val) ~ "(funcIn, writer);");
+                        }
+
+                        import grpc.common.batchcall;
+
+                        DEBUG("done with func.. RecvClose");
+/*
+                        BatchCall batch = new BatchCall(data);
+                        int cancelled = 0;
+                        batch.addOp(new RecvCloseOnServerOp(&cancelled));
+                        auto _s = batch.run(_tag, 1.msecs);
+                        */
+
+
+                        DEBUG("func call: writing");
+                        writer.finish(stat);
+                        DEBUG("func call: done");
+
+                };
+
+
+                if(grpc_call_error error = callMeta.requestCall(registeredMethods[remoteName], _tagTable[i], srv)) {
+                    ERROR("got call error ", error);
+                }
+                else {
+                    INFO("Registered fine");
+                }
+
+
+            }();
+        }
+        () @trusted { 
+           // grpc_prefork();
+            _servicer.tagTable = _tagTable;
+            _servicer.handlers = _handlers;
+            _servicer.registeredMethods = registeredMethods;
+            _servicer.srv = &srv;
+            _servicer.start();
+        }();
+
+        
+        return true;
     }
 
 
     // this function will always be called by main()
-
+/++
     bool register(Exclusive!ServerPtr* server_) {
         alias parent = BaseTypeTuple!T[1];
 
@@ -346,19 +602,26 @@ class Service(T) : ServiceHandlerInterface {
         }
         return true;
     }
+++/
 
-    this(ulong serviceId, CompletionQueue!"Next" cq, void*[string] methodTable) {
-
-        _serviceInstance = new T();
+    this(ulong serviceId, ref CompletionQueue!"Next" cq, void*[string] methodTable) @trusted {
 
         registeredMethods = methodTable.dup;
         _serviceId = serviceId;
 
-        globalCq = cq;
+        _servicer = new ServicerThread!T();
+        _servicer.isDaemon = true;
+
+        serviceCq = new CompletionQueue!"Next"();
+        _servicer._serviceCq = &serviceCq;
+        _servicer._globalCq = &cq; 
 
         foreach(method; methodTable.keys) {
-            auto _cq = new CompletionQueue!"Pluck"();
-            callData[method] = new RemoteCall(cq, _cq);
+            import core.atomic;
+            auto _callData = cast(RemoteCall*[string])callData; 
+            _callData[method] = RemoteCall(cq, serviceCq);
+
+            callData = cast(shared(RemoteCall)*[string])_callData;
         }
 
         with(funcType) { 
@@ -368,7 +631,8 @@ class Service(T) : ServiceHandlerInterface {
             _funcCount[STREAM_CLIENT_SERVER] = 0;
         }
 
-//        mainThread = new ServicerThread();
+
+        //        mainThread = new ServicerThread();
 //        mainThread.isDaemon = true;
 //        mainThread.start();
     }
