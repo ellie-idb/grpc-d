@@ -1,26 +1,24 @@
 module grpc.stream.server.writer;
-import interop.headers;
+import grpc.core.grpc_preproc;
 import grpc.core.tag;
 import google.rpc.status;
 import grpc.common.cq;
 import grpc.common.batchcall;
 import grpc.common.call;
-import std.stdio;
 
 class ServerWriter(T) {
     private {
-        BatchCall _op;
-        RemoteCall* _callDetails;
-        Tag* _tag;
+        RemoteCall _callDetails;
+        Tag _tag;
         bool _started;
     }
 
     bool start() {
-        _op.reset(); 
+        BatchCall _op = new BatchCall(_callDetails);
 
         _op.addOp(new SendInitialMetadataOp()); 
 
-        _op.run(*_tag);
+        _op.run(_tag);
 
         _started = true;
 
@@ -34,15 +32,17 @@ class ServerWriter(T) {
         if(!_started) {
             return false;
         }
+        import std.stdio;
 
-        _op.reset();
-
+        writeln("hello!");
+        BatchCall _op = new BatchCall(_callDetails);
+        writeln("batch call created");
         ubyte[] _out = obj.toProtobuf.array;
         _op.addOp(new SendMessageOp(_out));
 
         writeln("running!");
 
-        _op.run(*_tag);
+        _op.run(_tag);
 
         writeln("done running");
 
@@ -50,26 +50,24 @@ class ServerWriter(T) {
     }
 
     bool finish(Status _stat) {
+
         if(!_started) {
             return false;
         }
 
         bool ok = false;
 
-        writeln("finish running");
-
-        _op.reset();
+        BatchCall _op = new BatchCall(_callDetails);
 
         _op.addOp(new SendStatusFromServerOp(cast(grpc_status_code)_stat.code, _stat.message));
-        _op.run(*_tag);
+        _op.run(_tag);
 
         return true;
     }
 
     this(ref RemoteCall _call, ref Tag tag) {
-        _callDetails = &_call;
-        _op = new BatchCall(_callDetails);
-        _tag = &tag;
+        _callDetails = _call;
+        _tag = tag;
     }
 
     ~this() {

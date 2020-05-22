@@ -5,14 +5,11 @@
 		"asynchronous": "0.6.8",
 		"automem": "0.3.5",
 		"fearless": "0.0.2",
-		"future": "0.1.0",
-		"interop": "~master",
 		"libasync": "0.8.4",
 		"memutils": "0.4.13",
 		"protobuf": "0.6.0",
 		"stdx-allocator": "2.77.5",
 		"test_allocator": "0.2.5",
-		"unit-threaded": "0.7.55",
-		"universal": "0.1.0"
+		"unit-threaded": "0.7.55"
 	}
 }
