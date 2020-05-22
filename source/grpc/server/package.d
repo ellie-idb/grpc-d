@@ -1,6 +1,5 @@
 module grpc.server;
-
-import std.stdio;
+import grpc.logger;
 import interop.headers;
 import grpc.common.cq;
 import grpc.core.tag;
@@ -53,7 +52,7 @@ class Server
             while(run_) {
                 auto item = masterQueue.next(10.seconds);
                 if(item.type == GRPC_OP_COMPLETE) {
-                    debug writeln("MAIN QUEUE: New event");
+                    DEBUG("MAIN QUEUE: New event");
                     Tag tag = *cast(Tag*)item.tag;
 
                     services[services.keys[tag.metadata[2]]].addToQueue(tag);
@@ -76,7 +75,7 @@ class Server
 
         auto status = grpc_server_add_insecure_http2_port(server.server, fmt.toStringz);
         if(status == port) {
-            writeln("gRPC: server binded to ", fmt);
+            INFO("server binded to ", fmt);
             return true;
         } 
 

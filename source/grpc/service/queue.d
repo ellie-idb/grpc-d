@@ -5,7 +5,6 @@ import core.sync.semaphore;
 // class adopted from some answer on stackoverflow/d forums
 
 class Queue(T) {
- 
     private struct Node {
         T     payload;
         Node* next;

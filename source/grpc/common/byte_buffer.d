@@ -1,4 +1,5 @@
 module grpc.common.byte_buffer;
+import grpc.logger;
 import interop.headers;
 import fearless;
 
@@ -16,7 +17,7 @@ class ByteBuffer {
     
     auto borrow() {
         import std.stdio;
-        debug writeln("bf: ", _buf.isLocked);
+        DEBUG("bf: ", _buf.isLocked);
         return _buf.lock();
     }
 
@@ -53,14 +54,14 @@ class ByteBuffer {
             grpc_byte_buffer_reader_init(&reader, buf);
 
             grpc_byte_buffer* _2 = grpc_raw_byte_buffer_from_reader(&reader);
-            writeln("byte buffer did not match what was expected?");
+            ERROR("byte buffer did not match what was expected?");
 
             { 
-                writeln(cast(ubyte[])byte_buffer_to_string(_2));
+                ERROR(cast(ubyte[])byte_buffer_to_string(_2));
             }
 
-            writeln(grpc_byte_buffer_length(_2));
-            writeln(buf._buf.data.raw.slice_buffer.length);
+            ERROR(grpc_byte_buffer_length(_2));
+            ERROR(buf._buf.data.raw.slice_buffer.length);
 
             grpc_byte_buffer_destroy(_2);
             grpc_byte_buffer_reader_destroy(&reader);

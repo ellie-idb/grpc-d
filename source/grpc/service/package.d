@@ -1,4 +1,5 @@
 module grpc.service;
+import grpc.logger;
 import core.thread;
 import fearless;
 import grpc.server : ServerPtr;
@@ -110,7 +111,7 @@ class Service(T) : ServiceHandlerInterface {
                     serviceQueue.popFront;
 
                     string remoteName = methodNames[tag.metadata[4]];
-                    debug writeln(remoteName);
+                    DEBUG("remote name: ", remoteName);
 
                     try { 
                         _handlers[remoteName](_serviceInstance, callData[remoteName], _tagTable[tag.metadata[4]]);
@@ -118,7 +119,7 @@ class Service(T) : ServiceHandlerInterface {
                         import grpc.common.batchcall;
                         import interop.headers;
 
-                        writeln("CAUGHT EXCEPTION: ", e.msg);
+                        ERROR("CAUGHT EXCEPTION: ", e.msg);
 
                         BatchCall call = new BatchCall(callData[remoteName]);
                         int cancelled = 0;
@@ -191,8 +192,7 @@ class Service(T) : ServiceHandlerInterface {
 
                 enum remoteName = getUDAs!(val, RPC)[0].methodName;
                 
-                debug import std.stdio;
-                debug writeln("REGISTER: " ~ remoteName);
+                DEBUG("REGISTER: " ~ remoteName);
                 if(remoteName !in registeredMethods) {
                     assert(0, "Expected the method to be present in the registered table..");
                 }
@@ -230,9 +230,9 @@ class Service(T) : ServiceHandlerInterface {
 
                             input funcIn;
                             output funcOut;
-                            debug writeln("func call: ", remoteName);
+                            DEBUG("func call: ", remoteName);
                             static if(hasUDA!(val, ClientStreaming) == 0 && hasUDA!(val, ServerStreaming) == 0) {
-                                debug writeln("func call: regular");
+                                DEBUG("func call: regular");
                                 writer.start();
 
                                 auto r = reader.read(1);
@@ -243,18 +243,18 @@ class Service(T) : ServiceHandlerInterface {
                                 writer.write(funcOut);
                             }
                             else static if(hasUDA!(val, ClientStreaming) && hasUDA!(val, ServerStreaming)) {
-                                debug writeln("func call: bidi");
+                                DEBUG("func call: bidi");
 
                                 mixin("stat = instance." ~ __traits(identifier, val) ~ "(reader, writer);");
                             }
                             else static if(hasUDA!(val, ClientStreaming)) {
-                                debug writeln("func call: client streaming");
+                                DEBUG("func call: client streaming");
                                 mixin("stat = instance." ~ __traits(identifier, val) ~ "(reader, funcOut);");
                                 writer.start();
                                 writer.write(funcOut);
                             } 
                             else static if(hasUDA!(val, ServerStreaming)) {
-                                debug writeln("func call: server streaming");
+                                DEBUG("func call: server streaming");
                                 auto r = reader.read(1);
                                 funcIn = r.front;
                                 r.popFront;
@@ -263,9 +263,9 @@ class Service(T) : ServiceHandlerInterface {
                                 mixin("stat = instance." ~ __traits(identifier, val) ~ "(funcIn, writer);");
                             }
 
-                            debug writeln("func call: writing");
+                            DEBUG("func call: writing");
                             writer.finish(stat);
-                            debug writeln("func call: done");
+                            DEBUG("func call: done");
 
                     };
 

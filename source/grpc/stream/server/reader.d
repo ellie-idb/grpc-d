@@ -1,4 +1,5 @@
 module grpc.stream.server.reader;
+import grpc.logger;
 import grpc.core.tag;
 import interop.headers;
 import grpc.common.cq; 
@@ -43,9 +44,9 @@ class ServerReader(T) {
                     try { 
                         protobuf = data.fromProtobuf!T();
                     } catch(Exception e) {
-                        writeln("Deserialization fault: ", e.msg);
-                        writeln(data);
-                        writeln("Byte buffer length: ", bf.length);
+                        ERROR("Deserialization fault: ", e.msg);
+                        ERROR(data);
+                        ERROR("Byte buffer length: ", bf.length);
 
                         return;
                     }
@@ -56,7 +57,7 @@ class ServerReader(T) {
                     batch.addOp(new RecvMessageOp(bf));
                     auto stat = batch.run(_tag, d);
                     if(stat != GRPC_CALL_OK) {
-                        writeln("READ ERROR: ", stat);
+                        ERROR("READ ERROR: ", stat);
                         return;
                     }
 

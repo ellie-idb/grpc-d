@@ -1,4 +1,5 @@
 module grpc.common.cq;
+import grpc.logger;
 import interop.headers;
 import std.typecons;
 import grpc.core.tag;
@@ -188,7 +189,7 @@ class CompletionQueue(string T)
                 evt = next(dur!"msecs"(100));
             }
             import std.stdio;
-            debug writeln(evt.type != GRPC_QUEUE_TIMEOUT);
+            DEBUG(evt.type != GRPC_QUEUE_TIMEOUT);
         }
     }
 
