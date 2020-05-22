@@ -1,41 +1,38 @@
 module grpc.core.tag;
-import interop.headers;
 
-struct Tag {
-@safe:
-    private {
-        static ubyte[32] hiddenData;
-        void generateNonce() @nogc {
+@nogc class Tag {
+    package {
+        ubyte[32] hiddenData;
+        void generateNonce() {
             for(int i = 0; i < 32; i++) {
                 import std.random;
                 hiddenData[i] = uniform!ubyte();
             }
         }
-    }
 
-    void* objectPtr;
+    }
 
     ubyte[16] metadata;
 
-    Tag* dup() {
-        Tag* ret = Tag();
+    Tag dup() {
+        Tag ret = new Tag();
         ret.metadata = metadata;
-        ret.hiddenData = hiddenData;
         return ret;
     }
 
-    Tag* opCall() inout @trusted @nogc {
-        Tag* ptr = cast(Tag*)gpr_malloc(Tag.sizeof);
-        import core.stdc.string : memset;
-        memset(ptr, 0, Tag.sizeof);
-        ptr.generateNonce();
-        return ptr;
+    this() {
+        generateNonce();
     }
 
-    ~this() @trusted {
-        gpr_free(&this);
+    override bool opEquals(Object o) {
+        if(typeid(this) == typeid(o)) {
+            Tag _o = cast(Tag)o;
+            if(_o.hiddenData == hiddenData) {
+                return true;
+            }
+        }
+
+        return false;
+
     }
-
-
-    @disable this(this);
 }

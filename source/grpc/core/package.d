@@ -1,6 +1,6 @@
 module grpc.core;
 import std.string : fromStringz;
-import interop.headers;
+import grpc.core.grpc_preproc;
 public import grpc.core.core;
 
 template assertNotReady() {

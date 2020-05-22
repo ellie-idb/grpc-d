@@ -1,5 +1,5 @@
 module grpc.channel;
-import interop.headers;
+import grpc.core.grpc_preproc;
 import grpc.common.cq;
 
 class Channel {

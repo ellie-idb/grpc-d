@@ -34,7 +34,7 @@ class Queue(T) {
         Add to the Queue (to the end).
     */
 
-    void put(ref T value) {
+    void put(T value) {
         synchronized(putLock) {
             Node* newLast = new Node(T.init,null);
             this._last.payload = value;

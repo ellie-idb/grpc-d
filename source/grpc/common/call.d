@@ -1,155 +1,181 @@
 module grpc.common.call;
-import interop.headers;
+import grpc.core.grpc_preproc;
 import grpc.common.cq;
+import fearless;
 import grpc.core.utils;
 import grpc.core.tag;
 import grpc.common.metadata;
 import grpc.common.byte_buffer;
 import grpc.logger;
-import grpc.server;
-import grpc.core.resource;
-import grpc.common.calldetails : CallDetails;
+import grpc.server : ServerPtr;
 
-struct RemoteCall {
-@safe:
+struct CallWrapper {
+    alias _call this;
+    grpc_call* _call;
+}
+
+struct CallDetailsWrapper {
+    alias details this;
+    grpc_call_details details;
+}
+
+class CallDetails {
     private {
-        void* allocFake;
+        Exclusive!CallDetailsWrapper* _details;
+    }
+
+    auto borrow() {
+        return _details.lock();
+    }
+
+    @property string method() {
+        auto details = _details.lock();
+        return slice_to_string(details.method); 
+    }
+
+    @property string host() {
+        auto details = _details.lock();
+        return slice_to_string(details.host);
+    }
+
+    @property uint flags() {
+        auto details = _details.lock();
+        uint flags = details.flags;
+        return flags;
+    }
+
+    @property Duration deadline() {
+        auto details = _details.lock();
+        Duration d = timespectodur(details.deadline);
+        return d;
+    }
+
+    this() {
+        grpc_call_details __details;
+        grpc_call_details_init(&__details);
+        _details = new Exclusive!CallDetailsWrapper(__details);
+    }
+
+    ~this() {
+        auto details = _details.lock();
+        grpc_call_details_destroy(&details.details);
+    }
+
+    package this(ref grpc_call_details details) {
+        _details = new Exclusive!CallDetailsWrapper(details);
+    }
+}
+
+class RemoteCall {
+    private {
         gpr_timespec deadline;
-        SharedResource _call;
-        CompletionQueue!"Next" _registeredCq;
+        Exclusive!CallWrapper* _call;
+        CompletionQueue!"Pluck" _registeredCq;
         CompletionQueue!"Next" _globalCq;
         ByteBuffer _data;
         CallDetails _callDetails;
         MetadataArray _metadataArray;
     }
 
-    @property inout(grpc_call)** handle() inout @trusted pure nothrow {
-        return cast(typeof(return)) _call.handle;
+    auto borrow() {
+        return _call.lock();
     }
 
-    grpc_call_error startBatch(grpc_op[] _ops, ref Tag _tag) @trusted {
-        grpc_call_error error = grpc_call_start_batch(*this.handle, _ops.ptr, _ops.length, &_tag, null);
+    grpc_call_error requestGenericCall(ref Tag _tag, Exclusive!ServerPtr* server_) {
+        auto server_ptr = server_.lock();
+        DEBUG("Got server lock");
 
-        return error;
-    }
+        auto method_cq = _registeredCq.ptr();
+        DEBUG("Got method lock");
 
-    grpc_call_error requestCall(void* _method, ref Tag _tag, ref Server server) @trusted {
+        DEBUG("Attempting to lock global");
+        auto global_cq = _globalCq.ptr();
 
-        grpc_call_error error;
+        DEBUG("Got global lock");
 
-        synchronized(_registeredCq) { 
-            auto method_cq = _registeredCq.ptrNoMutex();
-            DEBUG("Got method lock");
-
-            auto global_cq = _globalCq.ptrNoMutex();
-            DEBUG("Got global lock");
-
-            auto __call = this.handle();
-            DEBUG("Got grpc_call* lock: ", __call);
-
-            auto data = _data.handle;
-            DEBUG("Got byte buffer");
-
-            auto metadata = _metadataArray.borrow();
-            DEBUG("Got metadata lock");
-
-            auto callDetails = _callDetails.handle;
-
-            error = grpc_server_request_registered_call(server.handle,
-                    _method, __call, &deadline, &metadata.metadata,
-                    &data, method_cq, global_cq, &_tag);
-
+        grpc_call** call;
+        {
+            auto __call = _call.lock();
+            call = &__call._call;
         }
+        DEBUG("Got grpc_call* lock");
 
-        DEBUG(*this.handle());
+        auto data = _data.borrow();
+        DEBUG("Got byte buffer");
 
-//        error = grpc_server_request_call(server.handle, &__call._call, &callDetails.details, &metadata.metadata, global_cq, global_cq, cast(void*)_tag);
+        auto callDetails = _callDetails.borrow();
+        DEBUG("Got call data lock");
+
+        auto metadata = _metadataArray.borrow();
+        DEBUG("Got metadata lock");
+
+        DEBUG(_tag.metadata);
+
+        DEBUG("Registering..");
+        return grpc_server_request_call(server_ptr, call, &callDetails.details, &metadata.metadata, method_cq, global_cq, cast(void*)_tag);
+    }
+
+
+    grpc_call_error requestCall(void* _method, ref Tag _tag, Exclusive!ServerPtr* server_) {
+        import std.stdio;
+        auto server_ptr = server_.lock();
+        DEBUG("Got server lock");
+
+        auto method_cq = _registeredCq.ptr();
+        DEBUG("Got method lock");
+
+        auto global_cq = _globalCq.ptrNoMutex();
+        DEBUG("Got global lock");
+
+        auto __call = _call.lock();
+        DEBUG("Got grpc_call* lock");
+
+        auto data = _data.borrow();
+        DEBUG("Got byte buffer");
+
+        auto metadata = _metadataArray.borrow();
+        DEBUG("Got metadata lock");
+
+        DEBUG(_tag.metadata);
+
+        DEBUG("Registering..");
+
+        grpc_call_error error = grpc_server_request_registered_call(server_ptr,
+                cast(void*)_method, &__call._call, &deadline, &metadata.metadata,
+                &data._buf, method_cq, global_cq, &_tag);
+
+
         return error;
     }
 
-
-    @property inout(ByteBuffer)* data() inout {
-        return &_data;
+    @property ByteBuffer data() {
+        return _data;
     }
 
-    @property CompletionQueue!"Next" cq() {
+    @property CompletionQueue!"Pluck" cq() {
         return _registeredCq;
     }
 
-    @property inout(CallDetails)* details() inout {
-        return &_callDetails;
+    @property CallDetails details() {
+        return _callDetails;
     }
 
-    @property inout(MetadataArray)* metadata() inout {
-        return &_metadataArray;
+    @property MetadataArray metadata() {
+        return _metadataArray;
     }
 
-    bool kick() @trusted 
-    in {
-        assert(*this.handle != null);
-    }
-    do {
-        DEBUG("ptr for kick: ", cast(shared(void)*)&this);
-        return kick(cast(shared(void)*)&this);
-    }
+    this(CompletionQueue!"Next" globalCq, CompletionQueue!"Pluck" cq) {
+        _data = new ByteBuffer(); 
+        _globalCq = globalCq;
+        _registeredCq = cq;
 
-    bool kick(shared(void)* ptr) @trusted 
-    in {
-        assert(*this.handle != null);
-    }
-    do {
-        if(grpc_call_error error = grpc_call_start_batch(*this.handle, null, 0, cast(void*)ptr, null)) {
-            return false;
-        }
-        return true;
+        _call = new Exclusive!CallWrapper(cast(grpc_call*)0);
+        _callDetails = new CallDetails();
+        _metadataArray = new MetadataArray();
     }
 
-    bool kick(ref Tag _tag) @trusted 
-    in {
-        assert(*this.handle != null);
-    }
-    do {
-        grpc_op[] ops;
-        DEBUG(*this.handle);
-        if(grpc_call_error error = grpc_call_start_batch(*this.handle, null, 0, &_tag, null)) {
-            return false;
-        }
+    ~this() {
 
-        return true;
-    }
-
-    @disable this(this);
-
-    static RemoteCall* opCall(ref CompletionQueue!"Next" globalCq, ref CompletionQueue!"Next" cq) @trusted {
-        import core.stdc.string : memset;
-        import core.memory;
-        void* _ptr = GC.calloc(RemoteCall.sizeof);
-        RemoteCall* c = cast(RemoteCall*)_ptr;
-        c._data = ByteBuffer();
-        c._globalCq = globalCq;
-        c._registeredCq = cq;
-        c._callDetails = CallDetails();
-        c._metadataArray = new MetadataArray();
-
-        GC.addRoot(cast(void*)&c);
-
-        static Exception release(shared(void)* ptr) @trusted nothrow {
-            gpr_free(cast(void*)ptr);
-            return null;
-        }
-
-        if(grpc_call** ptr = cast(grpc_call**)gpr_malloc((grpc_call**).sizeof)) {
-            memset(ptr, 0, (grpc_call**).sizeof);
-            c._call = SharedResource(cast(shared)ptr, &release);
-        }
-        else {
-            assert("could not alloc smart ptr");
-        }
-
-        return c;
-    }
-
-    ~this() @trusted {
     }
 }
 

@@ -1,7 +1,8 @@
 module grpc.server;
 
 import std.stdio;
-import interop.headers;
+
+import grpc.core.grpc_preproc;
 import grpc.common.cq;
 import grpc.core.tag;
 import grpc.core;
@@ -14,154 +15,115 @@ import core.thread;
 import fearless;
 import grpc.service;
 import grpc.logger;
-import grpc.core.utils;
-import grpc.core.gpr;
 
-import grpc.core.resource;
-class NotificationThread : Thread {
-    this() {
-        super(&run);
-    }
-    CompletionQueue!"Next" masterQueue;
-    ServiceHandlerInterface[string] _services;
-    
-
-    __gshared bool run_ = true;
-private:
-    void run() {
-//        grpc_postfork_child();
-
-        int count = 0;
-        while(run_) {
-            DEBUG("pulling from queue");
-            auto _item = masterQueue.next(10.seconds);
-            auto item = _item.workForce();
-            if(item.success == 0) {
-                ERROR("item pulled was null?");
-                continue;
-            }
-
-            INFO("pulled ", item.type);
-            if(item.type == GRPC_OP_COMPLETE) {
-                DEBUG("MAIN QUEUE: New event");
-                Tag* tag = cast(Tag*)item.tag;
-
-                DEBUG(tag.metadata);
-                string svc = _services.keys[tag.metadata[1]];
-                try { 
-                    _services[svc].kick(tag);
-                } catch(Exception e) {
-                    DEBUG("unable to kick service");
-                    return;
-                }
-                catch(Error e) {
-                    DEBUG("unable to kick service");
-                    return;
-                }
-            }
-            else if(item.type == GRPC_QUEUE_SHUTDOWN) {
-                run_ = false;
-            }
-        }
-    }
+struct ServerPtr {
+    grpc_server* server;
+    alias server this;
 }
 
+import std.container.dlist;
 
-struct Server 
+class Server 
 {
-@safe:
     private {
-        SharedResource server_;
-        CompletionQueue!"Callback" processQueue;
+        Exclusive!ServerPtr* server_;
+
         CompletionQueue!"Next" masterQueue;
 
         ServiceHandlerInterface[string] services;
-        bool s_initialized;
-        bool s_started;
+
+        bool started;
     }
 
     /* 
        Thread which runs the main loop
     */
 
-    @property inout(grpc_server)* handle() inout @trusted pure nothrow {
-        return cast(typeof(return)) server_.handle;
-    }
+    __gshared bool run_;
+    
 
-    @property bool init() const pure nothrow { 
-        return server_.handle != null;
-    }
+    class NotificationThread : Thread {
+        this() {
+            super(&run);
+        }
+    private:
+        void run() {
+            int count = 0;
+            while(run_) {
+                auto item = masterQueue.next(10.seconds);
+                if(item.type == GRPC_OP_COMPLETE) {
+                    DEBUG("MAIN QUEUE: New event");
+                    Tag tag = *cast(Tag*)item.tag;
 
-    @property bool started() const pure nothrow {
-        return s_started;
-    }
+                    DEBUG(tag.metadata);
 
+                    services[services.keys[tag.metadata[2]]].addToQueue(tag);
+
+                    DEBUG("added to ", services.keys[tag.metadata[2]], "'s queue");
+                }
+                else if(item.type == GRPC_QUEUE_SHUTDOWN) {
+                    run_ = false;
+                }
+            }
+        }
+    }
 
     NotificationThread notifier;
 
-    bool bind(string host, ushort port) 
-    in { assert(!s_started); assert(s_initialized); }
-    do {
+    bool bind(string host, ushort port) {
         import std.format;
         import std.string : toStringz;
         string fmt = format!"%s:%d"(host, port);
 
-        if(auto status = unsafe!grpc_server_add_insecure_http2_port(this.handle, fmt.toStringz)) {
-            if(status == port) {
-                INFO("gRPC: server binded to ", fmt);
-                return true;
-            }
-            else {
-                throw new Exception("Could not bind");
-            }
-        }
-        else {
-            throw new Exception("Could not bind");
-        }
+        auto server = server_.lock();
+
+        auto status = grpc_server_add_insecure_http2_port(server.server, fmt.toStringz);
+        if(status == port) {
+            INFO("gRPC: server binded to ", fmt);
+            return true;
+        } 
+
+        return false;
     }
 
-    void registerQueue(string target)(CompletionQueue!target queue) @trusted 
-    in { assert(!s_started); assert(s_initialized); }
-    do {
-        auto ptr = queue.ptrNoMutex();
+    void registerQueue(CompletionQueue!"Next" queue) {
+        auto ptr = queue.ptr();
 
-        grpc_server_register_completion_queue(this.handle, ptr, null); 
+        auto server = server_.lock();
+        grpc_server_register_completion_queue(server.server, ptr.cq, null); 
     }
 
-    void wait() 
-    in { assert(s_started); assert(s_initialized); }
-    do {
-        while(this.handle != null) {
-            unsafe!(Thread.sleep)(1.msecs);
+    void wait() {
+        while(run_) {
+            Thread.sleep(1.msecs);
+        }
+
+        foreach(service; services.keys) {
+            services[service].stop();
         }
     }
 
-    void registerService(T)() 
-    in { assert(!s_started); assert(s_initialized); }
-    do {
+    void registerService(T)() {
+        assert(!started, "Cannot register a new service after Server.start() has been called.");
         import std.typecons;
         import std.traits;
 
-        void* registerMethod(const(char*) remoteName, const(char*) host, grpc_server_register_method_payload_handling payload_handle, uint flags) @trusted 
+        void* registerMethod(const(char*) remoteName, const(char*) host, grpc_server_register_method_payload_handling payload_handle, uint flags) 
         {
-            if(void* ptr = grpc_server_register_method(this.handle, remoteName, null, payload_handle, flags)) {
-                DEBUG("Registered method");
-                return ptr;
-            }
-            else {
-                ERROR("Could not register method");
-                throw new Exception("Could not register method");
-            }
+            import std.string;
+            void* ptr;
+            auto server = server_.lock();
+            ptr = grpc_server_register_method(server.server, remoteName, null, payload_handle, flags);
+
+            return ptr;
         }
 
         alias parent = BaseTypeTuple!T[1];
         alias serviceName = fullyQualifiedName!T;
         void*[string] registeredMethods;
         pragma(msg, "gRPC (" ~ fullyQualifiedName!T ~ ")");
-        Service!T _s;
-
         static foreach(i, val; getSymbolsByUDA!(parent, RPC)) {
-            () @trusted {
+            () {
                 enum remoteName = getUDAs!(val, RPC)[0].methodName;
                 import std.conv : to;
                 pragma(msg, "RPC (" ~ to!string(i) ~ "): " ~ fullyQualifiedName!(val));
@@ -175,95 +137,56 @@ struct Server
                 }
                 else static if(hasUDA!(val, ClientStreaming)) {
                     pragma(msg, "\tClient (stream) -> Server");
-                }
-                else static if(hasUDA!(val, ServerStreaming)) {
-                    pragma(msg, "\tClient <- (stream) Server");
-                }
-                else {
-                    pragma(msg, "\tClient <-> Server");
-                }
+                    }
+                    else static if(hasUDA!(val, ServerStreaming)) {
+                        pragma(msg, "\tClient <- (stream) Server");
+                    }
+                    else {
+                        pragma(msg, "\tClient <-> Server");
+                    }
 
-
-                shared(void)* s_method = cast(shared(void)*)registerMethod(remoteName, "", GRPC_SRM_PAYLOAD_READ_INITIAL_BYTE_BUFFER, 0);
-
-                // ok to cast back, this array is only used once
-                registeredMethods[remoteName] = cast(void*)s_method;
-
+                    registeredMethods[remoteName] = registerMethod(remoteName, "", GRPC_SRM_PAYLOAD_READ_INITIAL_BYTE_BUFFER, 0);
             }();
-
-
         }
 
- 
-        ulong id = () @trusted { string[] s = this.services.keys; return s.length; }();
-
-        _s = new Service!T(id, masterQueue, registeredMethods);
+        Service!T _s = new Service!T(services.keys.length, masterQueue, registeredMethods);
         services[serviceName] = _s;
     }
 
-    void finish() 
-    in { assert(s_initialized); }
-    do {
-        this.bind("0.0.0.0", 50051);
-        synchronized { 
-            unsafe!grpc_server_start(this.handle);
-        }
-
-        DEBUG("server started");
-
-        this.s_started = true;
-
-
-        () @trusted { 
-//            grpc_prefork();
-            this.notifier._services = this.services;
-            this.notifier.run_ = true;
-            this.notifier.start();
-        }();
+    void finish() {
+        auto server = server_.lock(); 
+        grpc_server_start(server.server);
+        started = true;
     }
 
-    void run() 
-    in { assert(s_initialized); }
-    do {
-        string[] keys = () @trusted { return this.services.keys; }();
-        foreach(service; keys) {
-            services[service].register(this);
+    void run() {
+        foreach(service; services.keys) {
+            services[service].register(server_);
         }
+
+        notifier = new NotificationThread();
+        notifier.isDaemon = true;
+        notifier.start();
 
     }
 
-    static Server opCall(grpc_channel_args args) @trusted {
-        if(grpc_server* ptr = grpc_server_create(null, null)) {
+    package this(grpc_channel_args args) {
+        mixin assertNotReady;
 
-            Server srv;
+        import std.concurrency;
+        run_ = true;
 
-            static Exception release(shared(void)* ptr) @trusted nothrow
-            {
-                grpc_server_destroy(cast(grpc_server*)ptr);
-                return null;
-            }
+        masterQueue = new CompletionQueue!"Next"();
 
-            srv.server_ = SharedResource(cast(shared)ptr, &release);
-            srv.s_initialized = true;
-//            srv.processQueue = new CompletionQueue!"Callback"();
+        grpc_server* ptr = grpc_server_create(&args, null);
+        server_ = new Exclusive!ServerPtr(ptr);
 
-//            srv.registerQueue!("Callback")(srv.processQueue);
-
-            srv.notifier = new NotificationThread();
-            srv.masterQueue = new CompletionQueue!"Next"();
-            srv.registerQueue!("Next")(srv.masterQueue);
-            srv.notifier.masterQueue = srv.masterQueue;
-            srv.notifier.isDaemon = true;
-
-            return srv;
-
-        }
-        else {
-            throw new Exception("Server creation error");
-        }
+        registerQueue(masterQueue);
     }
 
-    @disable this(this);
+    @disable public this() {
+
+    }
 
     ~this() {
     }
