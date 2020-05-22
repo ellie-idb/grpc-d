@@ -1,4 +1,4 @@
-name "grpcd"
+name "grpc-d-core"
 description "gRPC for DLang"
 authors "Harrison Ford"
 copyright "Copyright © 2019, Harrison Ford"
