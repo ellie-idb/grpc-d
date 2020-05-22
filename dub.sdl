@@ -4,11 +4,10 @@ authors "Harrison Ford"
 copyright "Copyright © 2019, Harrison Ford"
 license "proprietary"
 dependency "protobuf" version="~>0.6.0"
+dependency "asynchronous" version="~>0.6.8"
 dependency "fearless" version="~>0.0.2"
-dependency "asynchronous" version="~>0.6.8" 
+dependency "interop" version="~master"
 libs "grpc" "grpcpp_channelz"
-
 configuration "library" {
 	targetType "library"
 }
-

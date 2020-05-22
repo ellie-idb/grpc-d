@@ -1,5 +1,5 @@
 module grpc.server.builder;
-import grpc.core.grpc_preproc;
+import interop.headers;
 import grpc.server;
 
 import std.datetime;
@@ -20,7 +20,6 @@ class ServerBuilder {
         bool _useTLS;
         string _tlsChain;
         string _tlsKey;
-        Server _server;
     }
 
     @property ushort port(ushort _new) {
@@ -30,12 +29,6 @@ class ServerBuilder {
 
     @property ushort port() {
         return _port;
-    }
-
-    void register(T)() {
-        assert(_server !is null, "Server must be built before registering services..");
-
-        _server.registerService!T();
     }
 
     Server build() {
@@ -51,9 +44,7 @@ class ServerBuilder {
         _a ~= arg;
 
         args.args = _a.ptr; 
-        _server = new Server(args);
-
-        _server.bind("0.0.0.0", 50051);
+        Server _server = Server(args);
 
         return _server;
     }

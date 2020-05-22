@@ -1,0 +1,3 @@
+[submodule "ext/grpc"]
+	path = ext/grpc
+	url = git@github.com:grpc/grpc

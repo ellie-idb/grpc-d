@@ -1,14 +1,15 @@
 module grpc.stream.server.reader;
 import grpc.core.tag;
-import grpc.core.grpc_preproc;
+import interop.headers;
 import grpc.common.cq; 
 import grpc.common.call;
 import grpc.service.queue;
 
+
 class ServerReader(T) {
     private {
-        RemoteCall _call;
-        Tag _tag;
+        RemoteCall* _call;
+        Tag* _tag;
     }
 
     auto read(int count = 0, Duration d = 10.seconds) {
@@ -21,7 +22,7 @@ class ServerReader(T) {
         class Iterator(T) {
             private {
                 Queue!T _queue;
-                ByteBuffer _bf;
+                ByteBuffer* _bf;
 
                 size_t index;
                 
@@ -41,14 +42,15 @@ class ServerReader(T) {
 
                 bool readNewMessage() {
                     BatchCall batch = new BatchCall(_call);
-                    batch.addOp(new RecvMessageOp(_bf));
-                    auto stat = batch.run(_tag, d);
+                    batch.addOp(new RecvMessageOp(*_bf));
+                    auto stat = batch.run(*_tag, d);
                     if(stat != GRPC_CALL_OK) {
                         return false;
                     }
 
                     if(_bf.length != 0) {
-                        _queue.put(readAndIncrement());
+                        auto msg = readAndIncrement();
+                        _queue.put(msg);
                         return true;
                     }
 
@@ -148,8 +150,8 @@ class ServerReader(T) {
 
     this(ref RemoteCall call, ref Tag tag) {
         import std.stdio;
-        _call = call;
-        _tag = tag;
+        _call = &call;
+        _tag = &tag;
     }
 
     ~this() {

@@ -1,25 +1,35 @@
 module grpc.core.utils;
-import grpc.core.alloc;
-import grpc.core.grpc_preproc;
+import interop.headers;
 
-string slice_to_string(grpc_slice slice) {
+template unsafe(alias fn) {
+    @trusted auto unsafe(T...)(T args) {
+        return fn(args);
+    }
+}
+
+string slice_to_string(grpc_slice slice) @safe {
     import std.string : fromStringz;
 
     return slice_to_type!string(slice);
 }
 
-T slice_to_type(T)(grpc_slice slice) 
+T slice_to_type(T)(grpc_slice slice) @trusted 
 if(__traits(isPOD, T) && __traits(compiles, cast(T)[0x01, 0x02])) {
     import std.string : fromStringz;
-    const(char*) slice_c = grpc_slice_to_c_string(slice);
+    if(const(char*) slice_c = unsafe!grpc_slice_to_c_string(slice)) {
+        //slice is hacky, BUT slice_to_c_string ensures that it is actually said length
+        ubyte[] data = cast(ubyte[])slice_c[0..slice.data.inlined.length].dup;
 
-    ubyte[] data = cast(ubyte[])slice_c[0..slice.data.inlined.length].dup;
+        T o = cast(T)data;
 
-    T o = cast(T)data;
+        gpr_free(cast(void*)slice_c);
 
-    gpr_free(cast(void*)slice_c);
+        return o;
+    }
+    else {
+        throw new Exception("Could not convert slice to CString");
+    }
 
-    return o;
 }
 
 string byte_buffer_to_string(grpc_byte_buffer* bytebuf) {
@@ -52,5 +62,23 @@ grpc_slice type_to_slice(T)(T type) {
     slice = grpc_slice_ref(grpc_slice_from_copied_buffer(cast(const(char*))type, type.length));
     return slice;
 }
-    
 
+import core.time;
+    
+gpr_timespec durtotimespec(Duration time) @safe {
+    gpr_timespec t;
+    t.clock_type = GPR_CLOCK_MONOTONIC; 
+    MonoTime curr = MonoTime.currTime;
+    auto _time = curr + time;
+    import std.stdio;
+
+    auto nsecs = ticksToNSecs(_time.ticks).nsecs;
+
+    nsecs.split!("seconds", "nsecs")(t.tv_sec, t.tv_nsec);
+    
+    return t;
+}
+
+Duration timespectodur(gpr_timespec time) @safe nothrow {
+    return time.tv_sec.seconds + time.tv_nsec.nsecs;
+}

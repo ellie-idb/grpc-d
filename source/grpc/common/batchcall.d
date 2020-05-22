@@ -1,5 +1,5 @@
 module grpc.common.batchcall;
-import grpc.core.grpc_preproc;
+import interop.headers;
 import grpc.common.call;
 import grpc.core.utils;
 import grpc.common.metadata;
@@ -13,7 +13,7 @@ interface RemoteOp {
 class SendInitialMetadataOp : RemoteOp {
     private {
         grpc_metadata[] collectedMetadata;
-        Metadata[] _data;
+        MetadataArray _data;
     }
 
     grpc_op_type type() {
@@ -23,9 +23,12 @@ class SendInitialMetadataOp : RemoteOp {
     grpc_op value() {
         static grpc_op ret;
 
-        foreach(_meta; _data) {
-            grpc_metadata meta = _meta.borrow();
-            collectedMetadata ~= meta;
+        if(_data !is null) {
+            for(int i = 0; i < _data.count; i++) {
+                auto _meta = _data[i];
+                grpc_metadata meta = *_meta.handle;
+                collectedMetadata ~= meta;
+            }
         }
 
         ret.op = type();
@@ -35,7 +38,7 @@ class SendInitialMetadataOp : RemoteOp {
         return ret;
     }
 
-    this(Metadata[] data) {
+    this(ref MetadataArray data) {
         _data = data;
     }
 
@@ -75,7 +78,7 @@ class SendMessageOp : RemoteOp {
 
 class SendStatusFromServerOp : RemoteOp {
     private {
-        Metadata[] _trailing_metadata;
+        MetadataArray _trailing_metadata;
         grpc_metadata[] _collectedMetadata;
         grpc_status_code _status;
         grpc_slice _details;
@@ -86,20 +89,27 @@ class SendStatusFromServerOp : RemoteOp {
     }
 
     grpc_op value() {
-        foreach(_meta; _trailing_metadata) {
-            grpc_metadata meta = _meta.borrow();
-            _collectedMetadata ~= meta;
-        }
         static grpc_op ret;
+
+        if(_trailing_metadata !is null) { 
+            for(int i = 0; i < _trailing_metadata.count; i++) {
+                auto _meta = _trailing_metadata[i];
+
+                grpc_metadata meta = *_meta.handle();
+                _collectedMetadata ~= meta;
+            }
+            ret.data.send_status_from_server.trailing_metadata_count = _trailing_metadata.count;
+            ret.data.send_status_from_server.trailing_metadata = _collectedMetadata.ptr; 
+
+        }
+
         ret.op = type();
         ret.data.send_status_from_server.status_details = &_details;
         ret.data.send_status_from_server.status = _status;
-        ret.data.send_status_from_server.trailing_metadata_count = _trailing_metadata.length;
-        ret.data.send_status_from_server.trailing_metadata = _collectedMetadata.ptr; 
         return ret;
     }
 
-    this(Metadata[] trailing_metadata, grpc_status_code code, string details) {
+    this(MetadataArray trailing_metadata, grpc_status_code code, string details) {
         _details = string_to_slice(details);
         _trailing_metadata = trailing_metadata;
         _status = code;
@@ -142,7 +152,7 @@ class RecvInitialMetadataOp : RemoteOp {
 
 class RecvMessageOp : RemoteOp {
     private {
-        ByteBuffer _buf;
+        ByteBuffer* _buf;
     }
 
     grpc_op_type type() {
@@ -151,15 +161,15 @@ class RecvMessageOp : RemoteOp {
 
     grpc_op value() {
         static grpc_op ret;
-        auto buf = _buf.borrow();
+        auto buf = _buf.handle;
         ret.op = type();
-        ret.data.recv_message.recv_message = &buf._buf; 
+        ret.data.recv_message.recv_message = &buf; 
 
         return ret;
     }
 
-    this(ByteBuffer buf) {
-        _buf = buf;
+    this(ref ByteBuffer buf) {
+        _buf = &buf;
     }
 }
 /*
@@ -200,9 +210,9 @@ class RecvCloseOnServerOp : RemoteOp {
 
 class BatchCall {
     private {
-        RemoteCall _call;
+        RemoteCall* _call;
 
-        RemoteOp[] ops;
+        __gshared RemoteOp[] ops;
 
         bool sanityCheck() {
             int[int] count;
@@ -233,25 +243,34 @@ class BatchCall {
         writeln("sanity check: ", sanityCheck());
         assert(sanityCheck(), "failed sanity check");
 
-
         writeln("borrowing call");
 
-        auto call = _call.borrow();
+        auto call = _call.handle;
+
+        writeln("done");
 
         grpc_op[] _ops;
 
+        writeln(ops.length);
+
         foreach(op; ops) {
+            if(op is null) {
+                writeln("op was null?");
+                break;
+            }
             _ops ~= op.value();
         }
 
         writeln("starting batched call");
 
-        auto status = grpc_call_start_batch(call, _ops.ptr, _ops.length, &_tag, null);  
+
+
+        auto status = grpc_call_start_batch(*call, _ops.ptr, _ops.length, &_tag, null);  
         if(status == GRPC_CALL_OK) {
             import core.time;
             
             writeln("proceeding the cq so we don't fuck up");
-            _call.cq.next(_tag, d);
+            _call.cq.next(d);
         }
 
         writeln("and we done");
@@ -264,9 +283,8 @@ class BatchCall {
         ops = ops.init;
     }
 
-    this(ref RemoteCall call) {
+    this(RemoteCall* call) {
         _call = call;
-
     }
 
 }

@@ -1,18 +1,18 @@
 module grpc.logger;
 import grpc.service.queue;
 import std.datetime; 
+import grpc.core.gpr;
 import core.thread;
 
 enum Verbosity {
-    Debug = "DEBUG",
-    Info = "INFO",
-    Warning = "WARNING",
-    Error = "ERROR"
+    Debug = 0,
+    Info = 1,
+    Error = 2
 };
 
 static __gshared Logger gLogger;
 
-void INFO(string file = __MODULE__, int line = __LINE__, A...)(lazy A args) {
+void INFO(string file = __MODULE__, int line = __LINE__, A...)(lazy A args) @trusted {
     string message = "";
     foreach(arg; args) {
         import std.conv : to;
@@ -22,17 +22,7 @@ void INFO(string file = __MODULE__, int line = __LINE__, A...)(lazy A args) {
     gLogger.log(Verbosity.Info, message, file, line);
 }
 
-void WARNING(string file = __MODULE__, int line = __LINE__, A...)(lazy A args) {
-    string message = "";
-    foreach(arg; args) {
-        import std.conv : to;
-        message ~= to!string(arg); 
-    }
-
-    gLogger.log(Verbosity.Warning, message, file, line);
-}
-
-void DEBUG(string file = __MODULE__, int line = __LINE__, A...)(lazy A args) {
+void DEBUG(string file = __MODULE__, int line = __LINE__, A...)(lazy A args) @trusted {
     string message = "";
     foreach(arg; args) {
         import std.conv : to;
@@ -42,7 +32,7 @@ void DEBUG(string file = __MODULE__, int line = __LINE__, A...)(lazy A args) {
     gLogger.log(Verbosity.Debug, message, file, line);
 }
 
-void ERROR(string file = __MODULE__, int line = __LINE__, A...)(lazy A args) {
+void ERROR(string file = __MODULE__, int line = __LINE__, A...)(lazy A args) @trusted  {
     string message = "";
     foreach(arg; args) {
         import std.conv : to;
@@ -68,41 +58,26 @@ class Logger {
 
         Queue!LogEvent q;
 
-        LoggerThread _thread;
-        
-        class LoggerThread : Thread {
-            this() {
-                super(&run);
-            }
-
-        private:
-            void run() {
-                while(true) {
-                    import std.stdio : writeln;
-                    q.notify();
-                    {
-                        LogEvent l = q.front;
-                        q.popFront;
-                        if(l.v >= minVerbosity) {
-                            import std.format;
-                            string message = format!"%s [%s:%s] %s"(l.time.toISOExtString(), l.source, l.v, l.message);
-                            writeln(message);
-                        }
-                    }
-                }
-            }
-        }
+        Verbosity __minVerbosity;
 
     }
 
-    Verbosity minVerbosity;
+    @property Verbosity minVerbosity() {
+        return __minVerbosity;
+    }
+
+    @property Verbosity minVerbosity(Verbosity _min) {
+        gpr_log_verbosity_init();
+        gpr_set_log_verbosity(cast(gpr_log_severity)_min);
+        __minVerbosity = _min;
+
+        return _min;
+    }
+
+
     
     void info(string message, string file = __MODULE__, int line = __LINE__) {
         log(Verbosity.Info, message, file, line);
-    }
-
-    void warning(string message, string file = __MODULE__, int line = __LINE__) {
-        log(Verbosity.Warning, message, file, line);
     }
 
     void debug_(string message, string file = __MODULE__, int line = __LINE__) {
@@ -114,14 +89,9 @@ class Logger {
     }
 
     void log(Verbosity v, string message, string file = __MODULE__, int line = __LINE__) {
-        LogEvent l;
-        l.time = Clock.currTime();
-        l.v = v;
-        l.message = message;
-        import std.conv : to;
-        l.source = file ~ ":" ~ to!string(line); 
-
-        q.put(l);
+        import std.string : toStringz;
+        const(char)* msg = message.toStringz;
+        gpr_log_message(file.toStringz, line, cast(gpr_log_severity)v, msg); 
     }
 
     this(Verbosity _minVerbosity = Verbosity.Info, string info = "", string warning = "", string error = "", string debug_ = "") {
@@ -130,17 +100,20 @@ class Logger {
         _warningPath = warning;
         _errorPath = error;
         _debugPath = debug_;
-
-        q = new Queue!LogEvent();
-
-        _thread = new LoggerThread();
-        _thread.isDaemon = true;
-        _thread.start();
     }
 
     shared static this() {
         gLogger = new Logger();
+        import core.exception;
+        core.exception.assertHandler = &assertHandler;
     }
 }
 
+void assertHandler(string file, ulong line, string message) nothrow {
+    try { 
+        ERROR("ASSERT: ", message, " at ", file, ":", line);
+    } catch(Exception e) {
+
+    }
+}
 
