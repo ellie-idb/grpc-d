@@ -116,7 +116,7 @@ class Service(T) : ServiceHandlerInterface {
                         _handlers[remoteName](_serviceInstance, callData[remoteName], _tagTable[tag.metadata[4]]);
                     } catch(Exception e) {
                         import grpc.common.batchcall;
-                        import grpc.core.grpc_preproc;
+                        import interop.headers;
 
                         writeln("CAUGHT EXCEPTION: ", e.msg);
 

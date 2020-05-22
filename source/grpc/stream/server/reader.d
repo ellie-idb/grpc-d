@@ -1,6 +1,6 @@
 module grpc.stream.server.reader;
 import grpc.core.tag;
-import grpc.core.grpc_preproc;
+import interop.headers;
 import grpc.common.cq; 
 import grpc.common.call;
 

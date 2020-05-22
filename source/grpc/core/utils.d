@@ -1,6 +1,5 @@
 module grpc.core.utils;
-import grpc.core.alloc;
-import grpc.core.grpc_preproc;
+import interop.headers;
 
 string slice_to_string(grpc_slice slice) {
     import std.string : fromStringz;

@@ -1,5 +1,5 @@
 module grpc.server.builder;
-import grpc.core.grpc_preproc;
+import interop.headers;
 import grpc.server;
 
 class ServerBuilder {

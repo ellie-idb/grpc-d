@@ -1,5 +1,5 @@
 module grpc.common.batchcall;
-import grpc.core.grpc_preproc;
+import interop.headers;
 import grpc.common.call;
 import grpc.core.utils;
 import grpc.common.metadata;

@@ -2,15 +2,6 @@ module grpc.core.core;
 import grpc.core;
 
 class GRPCModule {
-
-    this() {
-
-    }
-
-    ~this() {
-
-    }
-
     import std.stdio;
     shared static this() {
         grpc.core.init();

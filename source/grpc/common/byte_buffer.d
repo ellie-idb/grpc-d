@@ -1,6 +1,5 @@
 module grpc.common.byte_buffer;
-import grpc.core.grpc_preproc;
-import grpc.core.alloc;
+import interop.headers;
 import fearless;
 
 struct ByteBufferWrapper {

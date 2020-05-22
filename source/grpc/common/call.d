@@ -1,5 +1,5 @@
 module grpc.common.call;
-import grpc.core.grpc_preproc;
+import interop.headers;
 import grpc.common.cq;
 import fearless;
 import grpc.core.utils;
@@ -111,8 +111,8 @@ class RemoteCall {
 
         debug writeln(_tag.metadata);
 
-        debug writeln("Registering..");
-        return grpc_server_request_call(server_ptr, call, &callDetails.details, &metadata.metadata, method_cq, global_cq, cast(void*)_tag);
+        debug writeln("Registering generic call");
+        return grpc_server_request_call(server_ptr, call, &callDetails.details, &metadata.metadata, global_cq, global_cq, cast(void*)_tag);
     }
 
 

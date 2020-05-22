@@ -3,10 +3,14 @@
 	"versions": {
 		"async": "0.1.34",
 		"automem": "0.3.5",
+		"bolts": "1.3.1",
 		"fearless": "0.0.2",
+		"grpc-d-interop": "~master",
+		"optional": "1.0.0",
 		"protobuf": "0.6.0",
 		"stdx-allocator": "2.77.5",
 		"test_allocator": "0.2.5",
-		"unit-threaded": "0.7.55"
+		"unit-threaded": "0.7.55",
+		"vibe-d": "0.8.6"
 	}
 }

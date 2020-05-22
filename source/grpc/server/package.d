@@ -1,8 +1,7 @@
 module grpc.server;
 
 import std.stdio;
-
-import grpc.core.grpc_preproc;
+import interop.headers;
 import grpc.common.cq;
 import grpc.core.tag;
 import grpc.core;

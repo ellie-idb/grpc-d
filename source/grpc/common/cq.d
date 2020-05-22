@@ -1,7 +1,8 @@
 module grpc.common.cq;
-import grpc.core.grpc_preproc;
+import interop.headers;
 import std.typecons;
 import grpc.core.tag;
+import optional;
 import fearless;
 import grpc.core;
 public import core.time;

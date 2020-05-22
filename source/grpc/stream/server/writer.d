@@ -1,5 +1,5 @@
 module grpc.stream.server.writer;
-import grpc.core.grpc_preproc;
+import interop.headers;
 import grpc.core.tag;
 import google.rpc.status;
 import grpc.common.cq;

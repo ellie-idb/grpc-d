@@ -1,5 +1,5 @@
 module grpc.common.metadata;
-import grpc.core.grpc_preproc;
+import interop.headers;
 import grpc.common.cq;
 import grpc.core.utils;
 import fearless;
