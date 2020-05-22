@@ -72,8 +72,6 @@ class CompletionQueue(string T)
         TaskPool asyncAwait;
         Exclusive!CompletionQueuePtr* _cq;
 
-        grpc_completion_queue* __cq;
-
         mixin template ptrNoLock() {
             grpc_completion_queue* cq = (){ return _cq.lock().cq; }();
         }
@@ -90,17 +88,12 @@ class CompletionQueue(string T)
         return _cq.lock();
     }
 
-    grpc_completion_queue* ptrNoMutex() {
-        return __cq;
-    }
-
     static if(T == "Pluck") {
         grpc_event next(ref Tag tag, Duration time) {
             gpr_timespec t = durtotimespec(time);
             grpc_event _evt;
 
-            auto cq = _cq.lock();
-
+            mixin ptrNoLock;
             _evt = grpc_completion_queue_pluck(cq, &tag, t, null); 
 
             return _evt;
@@ -137,7 +130,7 @@ class CompletionQueue(string T)
             }
             */
 
-            auto cq = __cq;
+            mixin ptrNoLock;
             
             _evt = grpc_completion_queue_next(cq, t, null);
 
@@ -174,8 +167,6 @@ class CompletionQueue(string T)
             asyncAwait = new TaskPool(1);
         }
 
-        __cq = _c_cq.cq;
-
         _cq = new Exclusive!CompletionQueuePtr(_c_cq.cq);
 
         asyncAwait.isDaemon = true;
@@ -207,7 +198,8 @@ class CompletionQueue(string T)
     }
 
     ~this() {
-        grpc_completion_queue_destroy(__cq);
+        auto ptr = _cq.lock();
+        grpc_completion_queue_destroy(cast(grpc_completion_queue*)(ptr.cq));
     }
 }
 

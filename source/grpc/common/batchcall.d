@@ -206,15 +206,11 @@ class BatchCall {
 
         bool sanityCheck() {
             int[int] count;
-            try {
-                foreach(op; ops) {
-                    count[op.type()]++;
-                    if(count[op.type()] > 1) {
-                        return false;
-                    }
+            foreach(op; ops) {
+                count[op.type()]++;
+                if(count[op.type()] > 1) {
+                    return false;
                 }
-            } catch(Exception e) {
-                return false;
             }
             return true;
         }
@@ -228,33 +224,20 @@ class BatchCall {
 
     import core.time;
     grpc_call_error run(ref Tag _tag, Duration d = 1.msecs) {
-        import std.stdio;
-
-        writeln("sanity check: ", sanityCheck());
         assert(sanityCheck(), "failed sanity check");
 
-
-        writeln("borrowing call");
-
         auto call = _call.borrow();
-
         grpc_op[] _ops;
 
         foreach(op; ops) {
             _ops ~= op.value();
         }
 
-        writeln("starting batched call");
-
         auto status = grpc_call_start_batch(call, _ops.ptr, _ops.length, &_tag, null);  
         if(status == GRPC_CALL_OK) {
             import core.time;
-            
-            writeln("proceeding the cq so we don't fuck up");
             _call.cq.next(_tag, d);
         }
-
-        writeln("and we done");
 
         return status;
 

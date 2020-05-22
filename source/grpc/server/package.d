@@ -9,12 +9,13 @@ import grpc.core;
 import grpc.stream.server.reader;
 import grpc.stream.server.writer;
 import grpc.common.call;
+
 import google.rpc.status;
+
 import core.atomic;
 import core.thread;
 import fearless;
 import grpc.service;
-import grpc.logger;
 
 struct ServerPtr {
     grpc_server* server;
@@ -40,7 +41,8 @@ class Server
     */
 
     __gshared bool run_;
-    
+
+    // Fires 
 
     class NotificationThread : Thread {
         this() {
@@ -52,14 +54,10 @@ class Server
             while(run_) {
                 auto item = masterQueue.next(10.seconds);
                 if(item.type == GRPC_OP_COMPLETE) {
-                    DEBUG("MAIN QUEUE: New event");
+                    debug writeln("MAIN QUEUE: New event");
                     Tag tag = *cast(Tag*)item.tag;
 
-                    DEBUG(tag.metadata);
-
                     services[services.keys[tag.metadata[2]]].addToQueue(tag);
-
-                    DEBUG("added to ", services.keys[tag.metadata[2]], "'s queue");
                 }
                 else if(item.type == GRPC_QUEUE_SHUTDOWN) {
                     run_ = false;
@@ -79,7 +77,7 @@ class Server
 
         auto status = grpc_server_add_insecure_http2_port(server.server, fmt.toStringz);
         if(status == port) {
-            INFO("gRPC: server binded to ", fmt);
+            writeln("gRPC: server binded to ", fmt);
             return true;
         } 
 

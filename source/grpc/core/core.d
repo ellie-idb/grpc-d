@@ -1,6 +1,5 @@
 module grpc.core.core;
 import grpc.core;
-import grpc.logger;
 
 class GRPCModule {
 
@@ -16,7 +15,8 @@ class GRPCModule {
     shared static this() {
         grpc.core.init();
 
-        INFO("gRPC " ~ grpc.core.version_string() ~ " started");
+
+        debug writeln("gRPC " ~ grpc.core.version_string() ~ " started");
         __grpcmodule = new GRPCModule(); 
     }
 

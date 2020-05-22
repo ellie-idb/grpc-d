@@ -6,7 +6,6 @@ import grpc.core.utils;
 import grpc.core.tag;
 import grpc.common.metadata;
 import grpc.common.byte_buffer;
-import grpc.logger;
 import grpc.server : ServerPtr;
 
 struct CallWrapper {
@@ -82,36 +81,37 @@ class RemoteCall {
     }
 
     grpc_call_error requestGenericCall(ref Tag _tag, Exclusive!ServerPtr* server_) {
+        import std.stdio;
         auto server_ptr = server_.lock();
-        DEBUG("Got server lock");
+        debug writeln("Got server lock");
 
         auto method_cq = _registeredCq.ptr();
-        DEBUG("Got method lock");
+        debug writeln("Got method lock");
 
-        DEBUG("Attempting to lock global");
+        debug writeln("Attempting to lock global");
         auto global_cq = _globalCq.ptr();
 
-        DEBUG("Got global lock");
+        debug writeln("Got global lock");
 
         grpc_call** call;
         {
             auto __call = _call.lock();
             call = &__call._call;
         }
-        DEBUG("Got grpc_call* lock");
+        debug writeln("Got grpc_call* lock");
 
         auto data = _data.borrow();
-        DEBUG("Got byte buffer");
+        debug writeln("Got byte buffer");
 
         auto callDetails = _callDetails.borrow();
-        DEBUG("Got call data lock");
+        debug writeln("Got call data lock");
 
         auto metadata = _metadataArray.borrow();
-        DEBUG("Got metadata lock");
+        debug writeln("Got metadata lock");
 
-        DEBUG(_tag.metadata);
+        debug writeln(_tag.metadata);
 
-        DEBUG("Registering..");
+        debug writeln("Registering..");
         return grpc_server_request_call(server_ptr, call, &callDetails.details, &metadata.metadata, method_cq, global_cq, cast(void*)_tag);
     }
 
@@ -119,26 +119,31 @@ class RemoteCall {
     grpc_call_error requestCall(void* _method, ref Tag _tag, Exclusive!ServerPtr* server_) {
         import std.stdio;
         auto server_ptr = server_.lock();
-        DEBUG("Got server lock");
+        debug writeln("Got server lock");
 
         auto method_cq = _registeredCq.ptr();
-        DEBUG("Got method lock");
+        debug writeln("Got method lock");
 
-        auto global_cq = _globalCq.ptrNoMutex();
-        DEBUG("Got global lock");
+        debug writeln("Attempting to lock global");
+        auto global_cq = _globalCq.ptr();
+
+        debug writeln("Got global lock");
 
         auto __call = _call.lock();
-        DEBUG("Got grpc_call* lock");
+        debug writeln("Got grpc_call* lock");
 
         auto data = _data.borrow();
-        DEBUG("Got byte buffer");
+        debug writeln("Got byte buffer");
+
+        auto callDetails = _callDetails.borrow();
+        debug writeln("Got call data lock");
 
         auto metadata = _metadataArray.borrow();
-        DEBUG("Got metadata lock");
+        debug writeln("Got metadata lock");
 
-        DEBUG(_tag.metadata);
+        debug writeln(_tag.metadata);
 
-        DEBUG("Registering..");
+        debug writeln("Registering..");
 
         grpc_call_error error = grpc_server_request_registered_call(server_ptr,
                 cast(void*)_method, &__call._call, &deadline, &metadata.metadata,

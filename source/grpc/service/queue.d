@@ -12,7 +12,7 @@ class Queue(T) {
     }
  
     private Node* _first;
-    private Node* _last = new Node(T.init,null);
+    private Node* _last = new Node(null,null);
 
     @property int count() {
         synchronized(countLock) { 
@@ -36,7 +36,7 @@ class Queue(T) {
 
     void put(T value) {
         synchronized(putLock) {
-            Node* newLast = new Node(T.init,null);
+            Node* newLast = new Node(null,null);
             this._last.payload = value;
             this._last.next = newLast;
             this._last = newLast;

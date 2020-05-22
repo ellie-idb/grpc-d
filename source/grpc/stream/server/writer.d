@@ -32,19 +32,12 @@ class ServerWriter(T) {
         if(!_started) {
             return false;
         }
-        import std.stdio;
 
-        writeln("hello!");
         BatchCall _op = new BatchCall(_callDetails);
-        writeln("batch call created");
         ubyte[] _out = obj.toProtobuf.array;
         _op.addOp(new SendMessageOp(_out));
 
-        writeln("running!");
-
         _op.run(_tag);
-
-        writeln("done running");
 
         return true;
     }
