@@ -4,7 +4,6 @@ import grpc.core.resource;
 import grpc.core.utils;
 import core.memory : GC;
 
-@nogc:
 @safe:
 struct GPRMutex {
     private {
@@ -31,11 +30,9 @@ struct GPRMutex {
         GPRMutex obj;
         gpr_mu* mutex;
         if ((mutex = cast(gpr_mu*)gpr_zalloc((gpr_mu).sizeof)) != null) {
-            //doNotMoveObject(mutex, (gpr_mu).sizeof);
             static Exception release(shared(void)* ptr) @trusted nothrow {
                 gpr_mu_destroy(cast(gpr_mu*)ptr);
                 gpr_free(cast(void*)ptr);
-                //okToMoveObject(cast(void*)ptr);
                 return null;
             }
 

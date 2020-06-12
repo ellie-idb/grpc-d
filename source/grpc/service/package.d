@@ -1,4 +1,5 @@
 module grpc.service;
+import interop.headers;
 import grpc.logger;
 import core.thread;
 import grpc.server : Server;
@@ -91,6 +92,9 @@ class Service(T) : ServiceHandlerInterface {
     }
     
     void stop() {
+        _run = false;
+        _servicerPool.stop();
+        _serviceQueue.notifyAll();
     }
 
     void addToQueue(Tag* t) {
@@ -146,6 +150,8 @@ class Service(T) : ServiceHandlerInterface {
 
                 Tag* rpcTag = Tag();
                 tags ~= rpcTag;
+                DEBUG!"call: %x"(rpcTag.ctx.call);
+                DEBUG!"adding tag to global";
                 with(funcType) { 
                     rpcTag.metadata[0] = 0xDE;
                     rpcTag.metadata[1] = cast(ubyte)_funcCount[NORMAL];
@@ -156,8 +162,11 @@ class Service(T) : ServiceHandlerInterface {
                             auto callMeta = &_tag.ctx;
                             DEBUG!"grabbing mutex lock";
                             callMeta.mutex.lock;
+                            scope(exit) callMeta.mutex.unlock;
                             ServerReader!(input) reader = new ServerReader!(input)(queue, _tag);
                             ServerWriter!(output) writer = new ServerWriter!(output)(queue, _tag);
+                            
+                            /* results from our call */
                             Status stat;
                             input funcIn;
                             output funcOut;
@@ -165,7 +174,7 @@ class Service(T) : ServiceHandlerInterface {
                             static if(hasUDA!(val, ClientStreaming) == 0 && hasUDA!(val, ServerStreaming) == 0) {
                                 DEBUG!"func call: regular";
                                 DEBUG!"reading";
-                                auto r = reader.read(1);
+                                auto r = reader.read!(1);
                                 DEBUG!"read";
                                 funcIn = r.moveFront;
                                 r.popFront;
@@ -203,7 +212,11 @@ class Service(T) : ServiceHandlerInterface {
                             DEBUG!"func call: writing";
                             writer.finish(stat);
                             DEBUG!"func call: done";
-                            callMeta.mutex.unlock;
+                            
+                            callMeta.data.cleanup();
+                            grpc_call_unref(*callMeta.call);
+                            destroy(reader);
+                            destroy(writer);
                     };
 
                     static if(hasUDA!(val, ClientStreaming) && hasUDA!(val, ServerStreaming)) {
@@ -234,7 +247,7 @@ class Service(T) : ServiceHandlerInterface {
             }();
         }
 
-        for (int i = 0; i < 64; i++) {
+        for (int i = 0; i < 1; i++) {
             auto t = task!(
             () {
                 /* First, request all calls (this will be done when the Server requests us to initialize) */
@@ -262,7 +275,7 @@ class Service(T) : ServiceHandlerInterface {
                 
                 while (_run) {
                     DEBUG!"hello from task %d"(workerIndex);
-                    _serviceQueue.notify();
+                    _serviceQueue.notify(); // if the notify gets called, we have an exclusive lock on the mutex
                     {
                         DEBUG!"hit event on task %d"(workerIndex);
                         if (_serviceQueue.empty()) {
@@ -304,6 +317,7 @@ class Service(T) : ServiceHandlerInterface {
                             ERROR!"CAUGHT EXCEPTION: %s"(e.msg);
 
                             BatchCall call = new BatchCall();
+                            scope(exit) destroy(call);
                             int cancelled = 0;
                             call.addOp(new RecvCloseOnServerOp(&cancelled));
                             call.addOp(new SendInitialMetadataOp());

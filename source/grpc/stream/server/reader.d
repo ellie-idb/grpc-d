@@ -13,7 +13,7 @@ class ServerReader(T) {
         Tag* _tag;
     }
 
-    auto read(int count = 0, Duration d = 10.seconds) {
+    auto read(int count = 0)(Duration d = 10.seconds) {
         import std.concurrency;
         import std.stdio;
         import grpc.common.byte_buffer;
@@ -22,8 +22,7 @@ class ServerReader(T) {
         auto r = new Generator!T({
             auto ctx = &_tag.ctx;
             ByteBuffer* bf = &ctx.data;
-            BatchCall batch = new BatchCall();
-            if(count == 1) {
+            static if(count == 1) {
                 DEBUG!"unary call, so read off of the context bytebuffer (ptr: %x)"(bf);
                 T protobuf;
                 
@@ -38,8 +37,10 @@ class ServerReader(T) {
                 }
 
                 yield(protobuf);
+                DEBUG!"we're done here";
             }
             else {
+                BatchCall batch = new BatchCall();
                 ubyte[] data;
 
                 while(bf.length != 0) {
@@ -70,6 +71,8 @@ class ServerReader(T) {
                     }
 
                 }
+                
+                destroy(batch);
             }
         });
 
@@ -80,6 +83,7 @@ class ServerReader(T) {
         int cancelled = 0;
         auto ctx = &_tag.ctx;
         BatchCall batch = new BatchCall();
+        scope(exit) destroy(batch);
         batch.addOp(new RecvCloseOnServerOp(&cancelled));
         DEBUG!"running!"();
         auto stat = batch.run(_cq, _tag);

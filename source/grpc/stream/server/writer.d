@@ -16,6 +16,7 @@ class ServerWriter(T) {
 
     bool start() {
         BatchCall _op = new BatchCall();
+        scope(exit) destroy(_op);
 
         _op.addOp(new SendInitialMetadataOp()); 
 
@@ -35,6 +36,7 @@ class ServerWriter(T) {
         }
 
         BatchCall _op = new BatchCall();
+        scope(exit) destroy(_op);
         ubyte[] _out = obj.toProtobuf.array;
         DEBUG!"constructing";
         _op.addOp(new SendMessageOp(_out));
@@ -46,7 +48,6 @@ class ServerWriter(T) {
     }
 
     bool finish(Status _stat) {
-
         if(!_started) {
             return false;
         }
@@ -54,6 +55,7 @@ class ServerWriter(T) {
         bool ok = false;
 
         BatchCall _op = new BatchCall();
+        scope(exit) destroy(_op);
 
         _op.addOp(new SendStatusFromServerOp(cast(grpc_status_code)_stat.code, _stat.message));
         _op.run(_cq, _tag);

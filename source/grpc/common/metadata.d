@@ -1,11 +1,10 @@
 module grpc.common.metadata;
 import interop.headers;
+import grpc.logger;
 import grpc.common.cq;
 import grpc.core.utils;
 import grpc.core.mutex;
 import grpc.core.resource;
-
-@nogc: 
 
 /*
     INFO: This ARRAY SHOULD *NEVER* be shared across threads.
@@ -53,6 +52,11 @@ struct MetadataArray {
         MetadataArray obj;
         
         static Exception release(shared(void)* ptr) @trusted nothrow {
+            import std.stdio;
+            try {
+                DEBUG!"metadata array is being freed!"();
+            } catch (Exception e) {
+            }
             grpc_metadata_array_destroy(cast(grpc_metadata_array*)ptr);
             gpr_free(cast(void*)ptr);
 

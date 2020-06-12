@@ -53,6 +53,10 @@ class Queue(T) {
     void signal() {
         gpr_cv_signal(&cv);
     }
+    
+    void notifyAll() {
+        gpr_cv_broadcast(&cv);
+    }
 
     void put(T value) {
         gpr_mu_lock(&mutex);

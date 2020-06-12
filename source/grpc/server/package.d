@@ -17,16 +17,23 @@ class NotificationThread : Thread {
     }
         
 private:
+    __gshared bool shutdownPath = false;
+    __gshared bool _run = true;
     Server* srv;
     void run() {
         int count = 0;
-        bool run = true;
-        while(run) {
+        while(_run) {
             auto item = srv.masterQueue.next(10.seconds);
             if(item.type == GRPC_OP_COMPLETE) {
                 DEBUG!"MAIN QUEUE: New event"();
                 Tag* tag = cast(Tag*)item.tag;
                 DEBUG!"item.tag: %x"(item.tag);
+                
+                if (shutdownPath) {
+                    DEBUG!"in shutdown path, not adding to queue";
+                    continue;
+                }
+                
                 DEBUG!"tag.metadata: %s"(tag.metadata);
                 DEBUG!"services: %d"(srv.services.keys.length);
                 DEBUG!"Adding to service queue %s"(srv.services.keys[tag.metadata[2]]);
@@ -37,7 +44,7 @@ private:
                 srv.collecting = true;
             }
             else if(item.type == GRPC_QUEUE_SHUTDOWN) {
-                run = false;
+                _run = false;
             }
         }
     }
@@ -103,34 +110,21 @@ struct Server
     }
 
     void wait() {
-        bool run = true;
-        while(run) {
-            foreach(service; services) {
-                if (service.runners() == 0) {
-                    DEBUG!"service dead??"();
-                    run = false;
-                }
-            }
-
-            if (collecting) {
-                DEBUG!"done"();
-                collecting = false;
-            }
-
-            /*
-            
-            if (!notifier.isRunning()) {
-                DEBUG("notifier is NOT running!");
-                notifier.start();
-            }
-            */
-
+        while(_run) {
             Thread.sleep(1.msecs);
         }
-
+        
+        shutdown();
+    }
+    
+    void shutdown() @trusted {
+        DEBUG!"stopping all services";
+        notifier.shutdownPath = true;
         foreach(service; services) {
             service.stop();
         }
+        grpc_server_shutdown_and_notify(handle, masterQueue.handle, null);
+        notifier._run = false;
     }
 
     void registerService(T)() {
@@ -208,9 +202,10 @@ struct Server
             obj.masterQueue = CompletionQueue!"Next"();
             
             static Exception release(shared(void)* ptr) @trusted nothrow {
+                grpc_server_destroy(cast(grpc_server*)ptr);
                 return null;
             }
-            
+            obj._run = true;
             obj._server = SharedResource(cast(shared)srv, &release);
             obj.mutex = GPRMutex();
             obj.registerQueue(obj.masterQueue);

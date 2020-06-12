@@ -21,7 +21,7 @@ class SendInitialMetadataOp : RemoteOp {
     }
 
     grpc_op value() {
-        static grpc_op ret;
+        grpc_op ret;
 
         ret.op = type();
         ret.data.send_initial_metadata.metadata = array.data;
@@ -34,7 +34,9 @@ class SendInitialMetadataOp : RemoteOp {
         array = MetadataArray();
     }
     
-
+    ~this() {
+        destroy(array);
+    }
 }
 
 class SendMessageOp : RemoteOp {
@@ -47,7 +49,7 @@ class SendMessageOp : RemoteOp {
     }
 
     grpc_op value() {
-        static grpc_op ret;
+        grpc_op ret;
         assert(_buf.valid, "expected byte buffer to be valid");
         ret.op = type();
         ret.data.send_message.send_message = _buf.unsafeHandle;
@@ -58,6 +60,10 @@ class SendMessageOp : RemoteOp {
         _buf = ByteBuffer(message);
     }
 
+    ~this() {
+        DEBUG!"freeing send message";
+        destroy(_buf);
+    }
 }
 
 class SendStatusFromServerOp : RemoteOp {
@@ -72,7 +78,7 @@ class SendStatusFromServerOp : RemoteOp {
     }
 
     grpc_op value() {
-        static grpc_op ret;
+        grpc_op ret;
         ret.op = type();
         ret.data.send_status_from_server.status_details = &_details;
         ret.data.send_status_from_server.status = _status;
@@ -89,6 +95,8 @@ class SendStatusFromServerOp : RemoteOp {
 
     ~this() {
         grpc_slice_unref(_details);
+        destroy(_trailing_metadata);
+        destroy(_status);
     }
 }
 
@@ -102,7 +110,7 @@ class RecvInitialMetadataOp : RemoteOp {
     }
 
     grpc_op value() {
-        static grpc_op ret;
+        grpc_op ret;
         ret.op = type();
         ret.data.recv_initial_metadata.recv_initial_metadata = _metadata.handle;
 
@@ -111,6 +119,10 @@ class RecvInitialMetadataOp : RemoteOp {
 
     this() {
         _metadata = MetadataArray();
+    }
+    
+    ~this() {
+        destroy(_metadata);
     }
 
 }
@@ -125,10 +137,9 @@ class RecvMessageOp : RemoteOp {
     }
 
     grpc_op value() {
-        static grpc_op ret;
+        grpc_op ret;
         ret.op = type();
         ret.data.recv_message.recv_message = _buf.handle;
-
         return ret;
     }
     
@@ -161,7 +172,7 @@ class RecvCloseOnServerOp : RemoteOp {
     }
 
     grpc_op value() {
-        static grpc_op ret;
+        grpc_op ret;
         ret.op = type();
         ret.data.recv_close_on_server.cancelled = _cancelled;
 
@@ -216,16 +227,31 @@ class BatchCall {
         } else {
             ERROR!"STATUS: %s"(status);
         }
+        
+        foreach(op; _ops) {
+            destroy(op);
+        }
 
         return status;
 
     }
 
+    void destroyAllOps() {
+        foreach(op; ops) {
+            destroy(op);
+        }
+    }
+    
     void reset() {
+        destroyAllOps();
         ops = ops.init;
     }
 
     this() {
     }
 
+    ~this() {
+        destroyAllOps();
+        DEBUG!"freed batch op";
+    }
 }

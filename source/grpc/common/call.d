@@ -22,17 +22,19 @@ struct CallContext {
         obj.mutex = GPRMutex();
         obj.details = CallDetails();
         obj.metadata = MetadataArray();
-        //obj.metadata = new MetadataArray();
         obj.data = ByteBuffer();
         obj.call = cast(grpc_call**)gpr_zalloc((grpc_call**).sizeof); 
-        doNotMoveObject(cast(void*)obj.call, (grpc_call**).sizeof);
 
         return obj;
     }
 
     ~this() @trusted {
+        DEBUG!"freed call context";
         gpr_free(cast(void*)call);
-        okToMoveObject(cast(void*)call);
+        destroy(mutex);
+        destroy(details);
+        destroy(metadata);
+        destroy(data);
     }
 
     @disable this(this);
@@ -81,11 +83,9 @@ struct CallDetails {
         grpc_call_details* details;
 
         if ((details = cast(grpc_call_details*)gpr_zalloc((grpc_call_details).sizeof)) != null) {
-            doNotMoveObject(details, (grpc_call_details).sizeof);
             static Exception release(shared(void)* ptr) @trusted nothrow {
                 grpc_call_details_destroy(cast(grpc_call_details*)ptr);
                 gpr_free(cast(void*)ptr);
-                okToMoveObject(cast(void*)ptr);
                 return null;
             }
             
@@ -118,8 +118,6 @@ struct Tag {
         return obj;
     }
     
-    
-
     static void free(Tag* tag) @trusted {
         okToMoveObject(tag);
         destroy(tag.ctx);

@@ -115,15 +115,7 @@ struct CompletionQueue(string T)
 
         static Exception release(shared(void)* ptr) @trusted nothrow {
             grpc_completion_queue_shutdown(cast(grpc_completion_queue*)ptr);
-            grpc_event evt;
-
-            while((evt.type == GRPC_QUEUE_TIMEOUT)) {
-                gpr_timespec t = durtotimespec(1.msecs);
-
-                evt = grpc_completion_queue_next(cast(grpc_completion_queue*)ptr, t, null);
-
-                import std.stdio;
-            }
+            grpc_completion_queue_destroy(cast(grpc_completion_queue*)ptr);
 
             return null;
         }
@@ -137,6 +129,10 @@ struct CompletionQueue(string T)
     @disable this(this);
 
     void shutdown() @trusted {
+        mutex.lock;
+        scope(exit) mutex.unlock;
+        grpc_completion_queue_shutdown(handle);
+        INFO!"shutting down CQ";
     }
 
 }

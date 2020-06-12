@@ -5,7 +5,6 @@ import core.thread.osthread;
 import core.runtime : Runtime;
 import core.memory : GC;
 
-@nogc: 
 class GRPCModule {
     import std.stdio;
     shared static this() {

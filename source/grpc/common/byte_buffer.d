@@ -10,6 +10,7 @@ struct ByteBuffer {
         SharedResource _buf;
         grpc_byte_buffer_reader reader;
         bool _readerInit;
+        bool _freeOnExit;
     }
     
     @property inout(grpc_byte_buffer)** handle() inout @trusted pure nothrow {
@@ -43,12 +44,12 @@ struct ByteBuffer {
     }
     
     void lock() {
-        INFO!"bf lock";
+        DEBUG!"bf lock";
         mutex.lock;
     }
     
     void unlock() {
-        INFO!"bf unlock";
+        DEBUG!"bf unlock";
         mutex.unlock;
     }
 
@@ -58,31 +59,7 @@ struct ByteBuffer {
         scope(exit) mutex.unlock;
         
         assert(valid, "byte buffer was not valid");
-        ubyte[] dat;
-
-        dat = cast(ubyte[])byte_buffer_to_string(unsafeHandle);
-        import std.stdio;
-
-        /*
-        if(dat.length != length()) {
-
-            grpc_byte_buffer_reader reader;
-            grpc_byte_buffer_reader_init(&reader, buf);
-
-            grpc_byte_buffer* _2 = grpc_raw_byte_buffer_from_reader(&reader);
-            ERROR!"byte buffer did not match what was expected?"();
-
-            { 
-                ERROR!"byte buffer: %s"(cast(ubyte[])byte_buffer_to_string(_2));
-            }
-
-            ERROR!"length: %d"(grpc_byte_buffer_length(_2));
-            ERROR!"length: %d"(buf._buf.data.raw.slice_buffer.length);
-
-            grpc_byte_buffer_destroy(_2);
-            grpc_byte_buffer_reader_destroy(&reader);
-        }
-        */
+        ubyte[] dat = cast(ubyte[])byte_buffer_to_string(unsafeHandle);
 
         return dat;
     }
@@ -105,7 +82,7 @@ struct ByteBuffer {
             import grpc.core.utils;
 
             ret = slice_to_type!(ubyte[])(slice);
-//            grpc_slice_unref(slice);
+            grpc_slice_unref(slice);
         }
         else {
             grpc_byte_buffer_reader_destroy(&reader);
@@ -125,6 +102,15 @@ struct ByteBuffer {
         ByteBuffer ret = ByteBuffer(buf_2);
         return ret;
     }
+    
+    void cleanup() {
+        lock;
+        scope(exit) unlock;
+        assert(valid, "byte buffer must be valid to clean");
+        grpc_byte_buffer_destroy(unsafeHandle);
+        *(handle) = null;
+        assert(!valid, "byte buffer must be invalid now");
+    }
 
     static ByteBuffer opCall() @trusted {
         ByteBuffer obj;
@@ -133,8 +119,10 @@ struct ByteBuffer {
             if (v != null) {
                 if (*v != null) {
                     grpc_byte_buffer_destroy(*v);
+                    *v = null;
                 }
-                gpr_free(cast(void*)ptr);
+                gpr_free(cast(void*)v);
+                v = null;
             }
             return null;
         }
@@ -152,11 +140,10 @@ struct ByteBuffer {
 
     static ByteBuffer opCall(ubyte[] _data) @trusted {
         import grpc.core.utils;
-        ubyte[] data = _data.dup;
-        grpc_slice _dat = type_to_slice!(ubyte[])(data);
-        grpc_slice_ref(_dat);
+        grpc_slice _dat = type_to_slice!(ubyte[])(_data);
         DEBUG!"sliced, creating new buf (%x)"(&_dat);
         grpc_byte_buffer* buf = grpc_raw_byte_buffer_create(&_dat, 1);
+        grpc_slice_unref(_dat);
         DEBUG!"ok!";
         
         return ByteBuffer(buf);

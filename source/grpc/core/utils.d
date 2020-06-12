@@ -14,6 +14,7 @@ if(__traits(isPOD, T) && __traits(compiles, cast(T)[0x01, 0x02])) {
     const(char*) slice_c = grpc_slice_to_c_string(slice);
 
     ubyte[] data = cast(ubyte[])slice_c[0..slice.data.inlined.length].dup;
+    data.length = slice.data.inlined.length;
 
     T o = cast(T)data;
 
@@ -27,14 +28,9 @@ string byte_buffer_to_string(grpc_byte_buffer* bytebuf) {
         grpc_byte_buffer_reader reader;
         grpc_byte_buffer_reader_init(&reader, bytebuf);
         grpc_slice slices = grpc_byte_buffer_reader_readall(&reader);
-
         string _s = slice_to_string(slices);
-
         grpc_byte_buffer_reader_destroy(&reader);
-
         grpc_slice_unref(slices);
-
-
         return _s;
 }
 
