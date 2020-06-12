@@ -175,7 +175,7 @@ class Service(T) : ServiceHandlerInterface {
                                 DEBUG!"func call: regular";
                                 DEBUG!"reading";
                                 auto r = reader.read!(1);
-                                funcIn = r.front;
+                                funcIn = r.moveFront;
                                 r.popFront;
                                 reader.finish();
                                 
@@ -284,7 +284,7 @@ class Service(T) : ServiceHandlerInterface {
 
                         DEBUG!"grabbing tag";
                         Tag* tag = _serviceQueue.front;
-                        //DEBUG("got tag: ", tag);
+                        DEBUG!"got tag: %x"(tag);
                         if (tag == null) {
                             ERROR!"got null tag?";
                             _serviceQueue.unlock;
@@ -315,7 +315,6 @@ class Service(T) : ServiceHandlerInterface {
                             ERROR!"CAUGHT EXCEPTION: %s"(e.msg);
 
                             BatchCall call = new BatchCall();
-                            scope(exit) destroy(call);
                             int cancelled = 0;
                             call.addOp(new RecvCloseOnServerOp(&cancelled));
                             call.addOp(new SendInitialMetadataOp());

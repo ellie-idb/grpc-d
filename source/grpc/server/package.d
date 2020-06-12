@@ -41,7 +41,6 @@ private:
             }
             else if(item.type == GRPC_QUEUE_TIMEOUT) {
                 DEBUG!"Re-enabling GC while we're timed out.."();
-                srv.collecting = true;
             }
             else if(item.type == GRPC_QUEUE_SHUTDOWN) {
                 _run = false;
@@ -111,9 +110,6 @@ struct Server
 
     void wait() {
         while(_run) {
-            if (!notifier.isRunning()) {
-                ERROR!"notifer crashed?";
-            }
         
             Thread.sleep(1.msecs);
         }

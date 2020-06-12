@@ -16,9 +16,7 @@ class ServerWriter(T) {
     }
 
     bool start() {
-        DEBUG!"reset op";
         _op.reset();
-        DEBUG!"add to array";
 
         _op.addOp(new SendInitialMetadataOp()); 
 

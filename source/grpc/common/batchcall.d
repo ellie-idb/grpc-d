@@ -1,4 +1,5 @@
 module grpc.common.batchcall;
+import std.exception;
 import interop.headers;
 import std.array;
 import grpc.common.call;
@@ -211,8 +212,8 @@ class BatchCall {
 
     /* requires the caller to have a lock on the CallContext */
     grpc_call_error run(CompletionQueue!"Next"* cq, Tag* _tag, Duration d = 1.msecs) {
-        assert(sanityCheck(), "failed sanity check");
-        assert(_tag != null, "tag should never be null");
+        enforce(sanityCheck(), "failed sanity check");
+        enforce(_tag != null, "tag should never be null");
         CallContext* ctx = &_tag.ctx;
         grpc_op[] _ops;
 
@@ -239,6 +240,7 @@ class BatchCall {
     }
 
     this() {
+        ops = appender!(RemoteOp[]);
     }
 
     ~this() {

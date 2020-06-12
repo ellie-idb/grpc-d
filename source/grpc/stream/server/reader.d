@@ -34,7 +34,6 @@ class ServerReader(T) {
                 if(bf.length != 0) {
                     ubyte[] data = bf.readAll();
                     protobuf = data.fromProtobuf!T();
-                    data.length = 0;
                 }
 
                 yield(protobuf);
@@ -84,10 +83,13 @@ class ServerReader(T) {
         int cancelled = 0;
         auto ctx = &_tag.ctx;
         BatchCall batch = new BatchCall();
-        scope(exit) destroy(batch);
         batch.addOp(new RecvCloseOnServerOp(&cancelled));
         DEBUG!"running!"();
-        auto stat = batch.run(_cq, _tag);
+        try {
+            auto stat = batch.run(_cq, _tag);
+        } catch(Exception e) {
+            ERROR!"crash"();
+        }
     }
 
 
