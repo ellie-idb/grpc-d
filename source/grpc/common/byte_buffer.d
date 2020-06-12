@@ -1,53 +1,69 @@
 module grpc.common.byte_buffer;
 import grpc.logger;
 import interop.headers;
-import fearless;
+import grpc.core.resource;
+import grpc.core.mutex;
 
-struct ByteBufferWrapper {
-    grpc_byte_buffer* _buf;
-    alias _buf this;
-}
-
-class ByteBuffer {
+struct ByteBuffer {
     private {
-        Exclusive!ByteBufferWrapper* _buf;
+        GPRMutex mutex;
+        SharedResource _buf;
         grpc_byte_buffer_reader reader;
         bool _readerInit;
     }
     
-    auto borrow() {
-        import std.stdio;
-        DEBUG!"bf: %d"(_buf.isLocked);
-        return _buf.lock();
+    @property inout(grpc_byte_buffer)** handle() inout @trusted pure nothrow {
+        return cast(typeof(return)) _buf.handle;
+    }
+    
+    @property inout(grpc_byte_buffer)* unsafeHandle() inout @trusted pure nothrow {
+        return cast(typeof(return)) *handle;
+    }
+    
+    @property bool valid() {
+        return unsafeHandle != null;
     }
 
     @property bool compressed() {
-        auto buf = _buf.lock();
-        if(buf._buf == null) {
-            return false;
-        }
-        return buf._buf.type == GRPC_BB_RAW;
+        mutex.lock;
+        scope(exit) mutex.unlock;
+        
+        assert(valid, "byte buffer was not valid");
+        
+        return unsafeHandle.type == GRPC_BB_RAW;
     }
 
     @property ulong length() {
-        auto buf = _buf.lock();
-        if(buf._buf == null) {
-            return 0;
-        }
-        return grpc_byte_buffer_length(buf);
+        mutex.lock;
+        scope(exit) mutex.unlock;
+        
+        assert(valid, "byte buffer was not valid");
+        
+        return grpc_byte_buffer_length(unsafeHandle);
+    }
+    
+    void lock() {
+        INFO!"bf lock";
+        mutex.lock;
+    }
+    
+    void unlock() {
+        INFO!"bf unlock";
+        mutex.unlock;
     }
 
     ubyte[] readAll() {
         import grpc.core.utils;
-        auto buf = _buf.lock();
+        mutex.lock;
+        scope(exit) mutex.unlock;
+        
+        assert(valid, "byte buffer was not valid");
         ubyte[] dat;
-        if(buf._buf == null) {
-            return dat; 
-        }
 
-        dat = cast(ubyte[])byte_buffer_to_string(buf);
+        dat = cast(ubyte[])byte_buffer_to_string(unsafeHandle);
         import std.stdio;
 
+        /*
         if(dat.length != length()) {
 
             grpc_byte_buffer_reader reader;
@@ -66,23 +82,21 @@ class ByteBuffer {
             grpc_byte_buffer_destroy(_2);
             grpc_byte_buffer_reader_destroy(&reader);
         }
+        */
 
         return dat;
     }
 
     ubyte[] read() {
-        import std.stdio;
         ubyte[] ret;
+        mutex.lock;
+        scope(exit) mutex.unlock;
+        
+        assert(valid, "byte buffer was not valid");
+        
         if(_readerInit == false) {
-            auto buf = _buf.lock();
-
-            if(buf._buf != null) {
-                grpc_byte_buffer_reader_init(&reader, buf._buf);
-                _readerInit = true;
-            }
-            else {
-                return ret;
-            }
+            grpc_byte_buffer_reader_init(&reader, unsafeHandle);
+            _readerInit = true;
         }
 
         grpc_slice slice;
@@ -102,39 +116,59 @@ class ByteBuffer {
     }
 
 
-    ByteBuffer copy() {
-        auto buf = _buf.lock();
-        auto buf2 = grpc_byte_buffer_copy(buf);
-        ByteBuffer ret = new ByteBuffer(buf2);
+    static ByteBuffer copy(ByteBuffer obj) {
+        obj.mutex.lock;
+        scope(exit) obj.mutex.unlock;
+        assert(obj.valid, "byte buffer was not valid");
+        
+        auto buf_2 = grpc_byte_buffer_copy(obj.unsafeHandle);
+        ByteBuffer ret = ByteBuffer(buf_2);
         return ret;
     }
 
-    package this(grpc_byte_buffer* buf) {
-        _buf = new Exclusive!ByteBufferWrapper(buf);
+    static ByteBuffer opCall() @trusted {
+        ByteBuffer obj;
+        static Exception release(shared(void)* ptr) @trusted nothrow {
+            grpc_byte_buffer** v = cast(grpc_byte_buffer**)ptr;
+            if (v != null) {
+                if (*v != null) {
+                    grpc_byte_buffer_destroy(*v);
+                }
+                gpr_free(cast(void*)ptr);
+            }
+            return null;
+        }
+        
+        grpc_byte_buffer** buf = cast(grpc_byte_buffer**)gpr_zalloc((grpc_byte_buffer**).sizeof);
+        if (buf != null) {
+            obj._buf = SharedResource(cast(shared)buf, &release);
+            obj.mutex = GPRMutex();
+        } else {
+            throw new Exception("malloc failed");
+        } 
+        
+        return obj;
+    }
+
+    static ByteBuffer opCall(ubyte[] _data) @trusted {
+        import grpc.core.utils;
+        ubyte[] data = _data.dup;
+        grpc_slice _dat = type_to_slice!(ubyte[])(data);
+        grpc_slice_ref(_dat);
+        DEBUG!"sliced, creating new buf (%x)"(&_dat);
+        grpc_byte_buffer* buf = grpc_raw_byte_buffer_create(&_dat, 1);
+        DEBUG!"ok!";
+        
+        return ByteBuffer(buf);
     }
     
-    this() {
-        import grpc.core.utils;
-        ubyte[] data = [0xFF]; 
-        grpc_slice _dat = type_to_slice!(ubyte[])(data);
-        grpc_byte_buffer* buf = grpc_raw_byte_buffer_create(&_dat, data.length);
-        grpc_slice_unref(_dat);
-
-        _buf = new Exclusive!ByteBufferWrapper(buf);
-
+    private static ByteBuffer opCall(grpc_byte_buffer* bb) @trusted {
+        ByteBuffer obj = ByteBuffer();
+        DEBUG!"setting unsafe handle";
+        *(obj.handle) = bb;
+        
+        return obj;
     }
 
-    this(ubyte[] data) {
-        import grpc.core.utils;
-        grpc_slice _dat = type_to_slice!(ubyte[])(data);
-        grpc_byte_buffer* buf = grpc_raw_byte_buffer_create(&_dat, data.length);
-        grpc_slice_unref(_dat);
-
-        _buf = new Exclusive!ByteBufferWrapper(buf);
-    }
-
-    ~this() {
-        auto buf = _buf.lock();
-        grpc_byte_buffer_destroy(buf);
-    }
+    @disable this(this);
 }

@@ -48,13 +48,14 @@ class Server
         void run() {
             int count = 0;
             while(run_) {
-                import core.memory : GC;
-                GC.disable;
                 auto item = masterQueue.next(10.seconds);
                 if(item.type == GRPC_OP_COMPLETE) {
                     DEBUG!"MAIN QUEUE: New event"();
                     Tag* tag = cast(Tag*)item.tag;
-                    DEBUG!"Adding to service queue %d"(services.keys[tag.metadata[2]]);
+                    DEBUG!"item.tag: %x"(item.tag);
+                    DEBUG!"tag.metadata: %s"(tag.metadata);
+                    DEBUG!"services: %d"(services.keys.length);
+                    DEBUG!"Adding to service queue %s"(services.keys[tag.metadata[2]]);
                     services[services.keys[tag.metadata[2]]].addToQueue(tag);
                 }
                 else if(item.type == GRPC_QUEUE_TIMEOUT) {
@@ -102,8 +103,6 @@ class Server
             }
 
             if (collecting) {
-                import core.memory : GC;
-                GC.collect;
                 DEBUG!"done"();
                 collecting = false;
             }

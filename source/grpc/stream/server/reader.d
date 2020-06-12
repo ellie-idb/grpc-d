@@ -21,13 +21,19 @@ class ServerReader(T) {
 
         auto r = new Generator!T({
             auto ctx = &_tag.ctx;
-            ByteBuffer bf = ctx.data;
+            ByteBuffer* bf = &ctx.data;
             BatchCall batch = new BatchCall();
             if(count == 1) {
+                DEBUG!"unary call, so read off of the context bytebuffer (ptr: %x)"(bf);
                 T protobuf;
+                
+                DEBUG!"checking if bf is valid";
+                
+                assert(bf.valid, "byte buffer should always be valid");
+                
+                DEBUG!"bf.length: %d"(bf.length);
                 if(bf.length != 0) {
                     ubyte[] data = bf.readAll();
-
                     protobuf = data.fromProtobuf!T();
                 }
 

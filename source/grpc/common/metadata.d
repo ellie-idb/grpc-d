@@ -3,6 +3,9 @@ import interop.headers;
 import grpc.common.cq;
 import grpc.core.utils;
 import fearless;
+import automem;
+import grpc.core.mutex;
+import grpc.core.resource;
 
 @nogc: 
 struct MetadataArrayWrapper {
@@ -15,46 +18,68 @@ struct MetadataWrapper {
     grpc_metadata metadata;
 }
 
-class MetadataArray {
+/*
+    INFO: This ARRAY SHOULD *NEVER* be shared across threads.
+    It is not thread-safe.
+*/
+struct MetadataArray {
     private {
-        gpr_mu mutex;
-        Exclusive!MetadataArrayWrapper* _metadata;
+        GPRMutex mutex;
+        SharedResource _metadata;
     }
-
-    auto borrow() {
-        return _metadata.lock();
+    
+    @property inout(grpc_metadata_array)* handle() inout @trusted pure nothrow {
+        return cast(typeof(return)) _metadata.handle;
+    }
+    
+    @property inout(grpc_metadata)* data() inout @trusted pure nothrow {
+        return cast(typeof(return)) handle.metadata;
     }
 
     @property ulong capacity() {
-        auto metadata = _metadata.lock();
-        return metadata.capacity;
+        mutex.lock;
+        scope(exit) mutex.unlock;
+        return handle.capacity;
     }
 
     @property ulong count() {
-        auto metadata = _metadata.lock();
-        return metadata.count;
+        mutex.lock;
+        scope(exit) mutex.unlock;
+        return handle.count;
     }
 
-    Metadata opIndex(size_t i1) {
-        auto metadata = _metadata.lock();
-        grpc_metadata[] mt = metadata.metadata.metadata[0..metadata.capacity]; 
-        if(i1 > metadata.count) 
+    grpc_metadata* opIndex(size_t i1) {
+        mutex.lock;
+        scope(exit) mutex.unlock;
+        if(i1 > count) 
         {
             import core.exception;
             throw new RangeError();
         }
 
-        Metadata meta = new Metadata(mt[i1]);
-
-        return meta;
+        return &handle.metadata[i1];
     }
 
-    this() {
-        grpc_metadata_array metadata;
+    static MetadataArray opCall() @trusted {
+        MetadataArray obj;
+        
+        static Exception release(shared(void)* ptr) @trusted nothrow {
+            grpc_metadata_array_destroy(cast(grpc_metadata_array*)ptr);
+            gpr_free(cast(void*)ptr);
 
-        grpc_metadata_array_init(&metadata);
-
-        _metadata = new Exclusive!MetadataArrayWrapper(metadata);
+            return null;
+        }
+        grpc_metadata_array* mt = cast(grpc_metadata_array*)gpr_zalloc((grpc_metadata_array).sizeof);
+        if(mt != null) {
+            grpc_metadata_array_init(mt);
+            obj._metadata = SharedResource(cast(shared)mt, &release);
+            obj.mutex = GPRMutex();
+        } else {
+            throw new Exception("malloc error");
+        }
+        return obj;
     }
+    
+    @disable this(this);
 }
 

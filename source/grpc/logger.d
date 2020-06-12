@@ -14,21 +14,27 @@ import std.array, std.format;
 static __gshared Logger gLogger;
 
 void INFO(string format, string file = __MODULE__, int line = __LINE__, A...)(lazy A args) @trusted {
-    auto msg = appender!string;
-    formattedWrite(msg, format, args);
-    gLogger.log(Verbosity.Info, msg.data, file, line);
+    if (gLogger.minVerbosity <= Verbosity.Info) {
+        auto msg = appender!string;
+        formattedWrite(msg, format, args);
+        gLogger.log(Verbosity.Info, msg.data, file, line);
+    }
 }
 
 void DEBUG(string format, string file = __MODULE__, int line = __LINE__, A...)(lazy A args) @trusted {
-    auto msg = appender!string;
-    formattedWrite(msg, format, args);
-    gLogger.log(Verbosity.Debug, msg.data, file, line);
+    if (gLogger.minVerbosity <= Verbosity.Debug) {
+        auto msg = appender!string;
+        formattedWrite(msg, format, args);
+        gLogger.log(Verbosity.Debug, msg.data, file, line);
+    }
 }
 
 void ERROR(string format, string file = __MODULE__, int line = __LINE__, A...)(lazy A args) @trusted {
-    auto msg = appender!string;
-    formattedWrite(msg, format, args);
-    gLogger.log(Verbosity.Error, msg.data, file, line);
+    if (gLogger.minVerbosity <= Verbosity.Error) {
+        auto msg = appender!string;
+        formattedWrite(msg, format, args);
+        gLogger.log(Verbosity.Error, msg.data, file, line);
+    }
 }
 
 class Logger {
@@ -97,9 +103,15 @@ class Logger {
     }
 }
 
+import core.stdc.stdlib : abort;
+import core.thread;
+import core.time;
+
 void assertHandler(string file, ulong line, string message) nothrow {
     try { 
         ERROR!"ASSERT: %s at %s:%d"(message, file, line);
+        Thread.sleep(10.msecs);
+        abort();
     } catch(Exception e) {
 
     }

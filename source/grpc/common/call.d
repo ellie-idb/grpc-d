@@ -23,8 +23,9 @@ struct CallContext {
         CallContext obj;
         obj.mutex = GPRMutex();
         obj.details = CallDetails();
+        obj.metadata = MetadataArray();
         //obj.metadata = new MetadataArray();
-        obj.data = new ByteBuffer();
+        obj.data = ByteBuffer();
         obj.call = cast(grpc_call**)gpr_zalloc((grpc_call**).sizeof); 
         doNotMoveObject(cast(void*)obj.call, (grpc_call**).sizeof);
 
@@ -118,6 +119,8 @@ struct Tag {
         obj.ctx = CallContext();
         return obj;
     }
+    
+    
 
     static void free(Tag* tag) @trusted {
         okToMoveObject(tag);

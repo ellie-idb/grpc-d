@@ -13,8 +13,7 @@ interface RemoteOp {
 
 class SendInitialMetadataOp : RemoteOp {
     private {
-        grpc_metadata[] collectedMetadata;
-        Metadata[] _data;
+        MetadataArray array;
     }
 
     grpc_op_type type() {
@@ -24,32 +23,23 @@ class SendInitialMetadataOp : RemoteOp {
     grpc_op value() {
         static grpc_op ret;
 
-        foreach(_meta; _data) {
-            grpc_metadata meta = _meta.borrow();
-            collectedMetadata ~= meta;
-        }
-
         ret.op = type();
-        ret.data.send_initial_metadata.metadata = collectedMetadata.ptr;
-        ret.data.send_initial_metadata.count = collectedMetadata.length;
+        ret.data.send_initial_metadata.metadata = array.data;
+        ret.data.send_initial_metadata.count = array.count;
 
         return ret;
     }
 
-    this(Metadata[] data) {
-        _data = data;
-    }
-
     this() {
-
+        array = MetadataArray();
     }
+    
 
 }
 
 class SendMessageOp : RemoteOp {
     private {
-        grpc_byte_buffer* _buf;
-        ubyte[] message;
+        ByteBuffer _buf;
     }
 
     grpc_op_type type() {
@@ -58,26 +48,21 @@ class SendMessageOp : RemoteOp {
 
     grpc_op value() {
         static grpc_op ret;
+        assert(_buf.valid, "expected byte buffer to be valid");
         ret.op = type();
-        ret.data.send_message.send_message = _buf;
+        ret.data.send_message.send_message = _buf.unsafeHandle;
         return ret;
     }
 
     this(ubyte[] message) {
-        grpc_slice msg = type_to_slice!(ubyte[])(message); 
-        _buf = grpc_raw_byte_buffer_create(&msg, 1); 
-        grpc_slice_unref(msg);
+        _buf = ByteBuffer(message);
     }
 
-    ~this() {
-        grpc_byte_buffer_destroy(_buf);
-    }
 }
 
 class SendStatusFromServerOp : RemoteOp {
     private {
-        Metadata[] _trailing_metadata;
-        grpc_metadata[] _collectedMetadata;
+        MetadataArray _trailing_metadata;
         grpc_status_code _status;
         grpc_slice _details;
     }
@@ -87,26 +72,17 @@ class SendStatusFromServerOp : RemoteOp {
     }
 
     grpc_op value() {
-        foreach(_meta; _trailing_metadata) {
-            grpc_metadata meta = _meta.borrow();
-            _collectedMetadata ~= meta;
-        }
         static grpc_op ret;
         ret.op = type();
         ret.data.send_status_from_server.status_details = &_details;
         ret.data.send_status_from_server.status = _status;
-        ret.data.send_status_from_server.trailing_metadata_count = _trailing_metadata.length;
-        ret.data.send_status_from_server.trailing_metadata = _collectedMetadata.ptr; 
+        ret.data.send_status_from_server.trailing_metadata_count =  _trailing_metadata.count;
+        ret.data.send_status_from_server.trailing_metadata = _trailing_metadata.data;
         return ret;
     }
 
-    this(Metadata[] trailing_metadata, grpc_status_code code, string details) {
-        _details = string_to_slice(details);
-        _trailing_metadata = trailing_metadata;
-        _status = code;
-    }
-
     this(grpc_status_code code, string details) {
+        _trailing_metadata = MetadataArray();
         _details = string_to_slice(details);
         _status = code;
     }
@@ -128,22 +104,20 @@ class RecvInitialMetadataOp : RemoteOp {
     grpc_op value() {
         static grpc_op ret;
         ret.op = type();
-
-        grpc_metadata_array metadata = _metadata.borrow();
-        ret.data.recv_initial_metadata.recv_initial_metadata = &metadata; 
+        ret.data.recv_initial_metadata.recv_initial_metadata = _metadata.handle;
 
         return ret;
     }
 
-    this(MetadataArray metadata) {
-        _metadata = metadata;
+    this() {
+        _metadata = MetadataArray();
     }
 
 }
 
 class RecvMessageOp : RemoteOp {
     private {
-        ByteBuffer _buf;
+        ByteBuffer* _buf;
     }
 
     grpc_op_type type() {
@@ -152,14 +126,14 @@ class RecvMessageOp : RemoteOp {
 
     grpc_op value() {
         static grpc_op ret;
-        auto buf = _buf.borrow();
         ret.op = type();
-        ret.data.recv_message.recv_message = &buf._buf; 
+        ret.data.recv_message.recv_message = _buf.handle;
 
         return ret;
     }
+    
 
-    this(ByteBuffer buf) {
+    this(ByteBuffer* buf) {
         _buf = buf;
     }
 }

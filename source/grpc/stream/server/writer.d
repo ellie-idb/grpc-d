@@ -1,5 +1,6 @@
 module grpc.stream.server.writer;
 import interop.headers;
+import grpc.logger;
 import grpc.core.tag;
 import google.rpc.status;
 import grpc.common.cq;
@@ -35,8 +36,10 @@ class ServerWriter(T) {
 
         BatchCall _op = new BatchCall();
         ubyte[] _out = obj.toProtobuf.array;
+        DEBUG!"constructing";
         _op.addOp(new SendMessageOp(_out));
 
+        DEBUG!"running";
         _op.run(_cq, _tag);
 
         return true;

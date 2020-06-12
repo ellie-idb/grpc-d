@@ -80,17 +80,17 @@ struct CompletionQueue(string T)
         auto details = ctx.details.handle();
         DEBUG!"Got CallDetails"();
 
-        auto metadata = ctx.metadata.borrow();
+        auto metadata = ctx.metadata.handle();
         DEBUG!"Got metadata lock"();
 
-        auto data = ctx.data.borrow();
+        auto data = ctx.data.handle();
         DEBUG!"Locked byte buffer"();
 
         DEBUG!"call: %x"(ctx.call);
 
         grpc_call_error error = grpc_server_request_registered_call(server_ptr,
-                method, ctx.call, &details.deadline, &metadata.metadata,
-                &data._buf, method_cq, global_cq, tag);
+                method, ctx.call, &details.deadline, metadata,
+                data, method_cq, global_cq, tag);
 
         DEBUG!"successfully reregistered"();
 

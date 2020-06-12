@@ -26,6 +26,14 @@ class Queue(T) {
     private gpr_cv cv;
     private gpr_mu mutex;
  
+    void lock() {
+        gpr_mu_lock(&mutex);
+    }
+    
+    void unlock() {
+        gpr_mu_unlock(&mutex);
+    }
+ 
     this() {
         gpr_cv_init(&cv);
         gpr_mu_init(&mutex);
@@ -41,9 +49,12 @@ class Queue(T) {
     /**
         Add to the Queue (to the end).
     */
+    
+    void signal() {
+        gpr_cv_signal(&cv);
+    }
 
     void put(T value) {
-        debug writeln("locking internal mutex");
         gpr_mu_lock(&mutex);
         { 
             Node* newLast = new Node(null,null);
@@ -62,10 +73,7 @@ class Queue(T) {
     */
 
     void notify(gpr_timespec timeout = durtotimespec(10.seconds)) {
-        if (gpr_mu_trylock(&mutex) == 0) {
-            return; //retry the lock
-        }
-        scope(exit) gpr_mu_unlock(&mutex);
+        gpr_mu_lock(&mutex);
         if (_count == 0) {
             gpr_cv_wait(&cv, &mutex, timeout);
         } else if (_count <= 0) {
@@ -76,9 +84,9 @@ class Queue(T) {
         }
     }
 
+    
+    /* ASSUMES YOU ARE LOCKED */
     bool empty() {
-        gpr_mu_lock(&mutex);
-        scope(exit) gpr_mu_unlock(&mutex);
         return this._count == 0;
     }
  
@@ -97,13 +105,20 @@ class Queue(T) {
         atomicOp!"-="(_count, 1);
         return obj;
     }
+    
+    void pop() in {
+        assert (!this.empty);
+    } do {
+        if (this._first != null) {
+            this._first = this._first.next;
+        }
+        atomicOp!"-="(_count, 1);
+    }
  
     ///ditto
     T front() in { 
         assert (!this.empty);
     } do {
-        gpr_mu_lock(&mutex);
-        scope(exit) gpr_mu_unlock(&mutex);
         return cast(T)(this._first.payload);
     }
  

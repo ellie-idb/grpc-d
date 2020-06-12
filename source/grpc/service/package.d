@@ -153,6 +153,7 @@ class Service(T) : ServiceHandlerInterface {
                     rpcTag.metadata[2] = cast(ubyte)_serviceId;
                     rpcTag.metadata[4] = cast(ubyte)i;
                     _handlers[remoteName] = (CompletionQueue!"Next"* queue, T instance, Tag* _tag) {
+                            DEBUG!"hello";
                             auto callMeta = &_tag.ctx;
                             DEBUG!"grabbing mutex lock";
                             callMeta.mutex.lock;
@@ -175,6 +176,7 @@ class Service(T) : ServiceHandlerInterface {
                                 mixin("stat = instance." ~ __traits(identifier, val) ~ "(funcIn, funcOut);");
                                 DEBUG!"starting write";
                                 writer.start();
+                                DEBUG!"writing";
                                 writer.write(funcOut);
                                 DEBUG!"done write";
                             }
@@ -233,34 +235,62 @@ class Service(T) : ServiceHandlerInterface {
             }();
         }
 
-        for (int i = 0; i < 1; i++) {
+        for (int i = 0; i < 8; i++) {
             auto t = task!(
             () {
                 /* First, request all calls (this will be done when the Server requests us to initialize) */
                 /* As well, create a thread-local completion queue */
                 auto _cq = CompletionQueue!"Next"();
-                foreach (tag; tags) {
+                ulong workerIndex = _servicerPool.workerIndex();
+                // DUPLICATE every tag into a thread-local tag cache, and mark it such
+                Tag*[] tlsTags;
+                foreach (_tag; tags) {
+                    Tag* tag = Tag();
+                    DEBUG!"duplicating tags for method (%x)"(tag);
+                    tag.method = _tag.method;
+                    tag.methodName = _tag.methodName.dup;
+                    tag.metadata = _tag.metadata.dup;
+                    // TODO: fix metadata array so we can have more then sizeof(ubyte) workers!
+                    tag.metadata[5] = cast(ubyte)workerIndex;
+                    DEBUG!"tag.metadata: %s"(tag.metadata);
+                    tlsTags ~= tag;
+                    
+                    // this OFFICIALLY binds the _cq to a specific tag
+                    
                     _cq.requestCall(tag.method, tag, _server); 
                 }
                 
+                
                 while (_run) {
-                    DEBUG!"hello from task %d"(_servicerPool.workerIndex());
+                    DEBUG!"hello from task %d"(workerIndex);
                     _serviceQueue.notify();
                     {
-                        DEBUG!"hit event!";
+                        DEBUG!"hit event on task %d"(workerIndex);
                         if (_serviceQueue.empty()) {
                             DEBUG!"service queue was actually empty..";
+                            _serviceQueue.unlock;
                             continue;
                         }
 
                         DEBUG!"grabbing tag";
-
-                        Tag* tag = _serviceQueue.popFront;
+                        Tag* tag = _serviceQueue.front;
                         //DEBUG("got tag: ", tag);
                         if (tag == null) {
                             ERROR!"got null tag?";
+                            _serviceQueue.unlock;
                             continue;
                         }
+                        
+                        if (tag.metadata[5] != cast(ubyte)workerIndex) {
+                            DEBUG!"hit a tag that isn't meant for us";
+                            _serviceQueue.unlock;
+                            _serviceQueue.signal;
+                            continue;
+                        }
+                        
+                        // otherwise, it's our tag and we have to pop it off 
+                        _serviceQueue.pop;
+                        _serviceQueue.unlock;
 
                         string remoteName = tag.methodName;
 
@@ -282,18 +312,8 @@ class Service(T) : ServiceHandlerInterface {
                             call.run(&_cq, tag);
                         }
 
-                        Tag* newTag = Tag();
-                        if (newTag == null) {
-                            assert(0);
-                        }
-                        
-                        newTag.methodName = tag.methodName;
-                        newTag.metadata = tag.metadata;
-                        newTag.method = tag.method;
-                        _cq.requestCall(tag.method, newTag, _server);
+                        _cq.requestCall(tag.method, tag, _server);
                         import interop.headers : gpr_free;
-                        DEBUG!"FREE TAG: %x"(tag);
-                        Tag.free(tag);
                     }
                 }
             })();
