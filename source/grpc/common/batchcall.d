@@ -1,5 +1,6 @@
 module grpc.common.batchcall;
 import interop.headers;
+import std.array;
 import grpc.common.call;
 import grpc.core.utils;
 import grpc.common.metadata;
@@ -186,7 +187,7 @@ class RecvCloseOnServerOp : RemoteOp {
 
 class BatchCall {
     private {
-        RemoteOp[] ops;
+        Appender!(RemoteOp[]) ops;
 
         bool sanityCheck() {
             int[int] count;
@@ -227,31 +228,20 @@ class BatchCall {
         } else {
             ERROR!"STATUS: %s"(status);
         }
-        
-        foreach(op; _ops) {
-            destroy(op);
-        }
 
         return status;
 
     }
 
-    void destroyAllOps() {
-        foreach(op; ops) {
-            destroy(op);
-        }
-    }
     
     void reset() {
-        destroyAllOps();
-        ops = ops.init;
+        ops.clear;
     }
 
     this() {
     }
 
     ~this() {
-        destroyAllOps();
         DEBUG!"freed batch op";
     }
 }

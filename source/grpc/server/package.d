@@ -111,6 +111,10 @@ struct Server
 
     void wait() {
         while(_run) {
+            if (!notifier.isRunning()) {
+                ERROR!"notifer crashed?";
+            }
+        
             Thread.sleep(1.msecs);
         }
         

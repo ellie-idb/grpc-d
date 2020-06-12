@@ -175,12 +175,11 @@ class Service(T) : ServiceHandlerInterface {
                                 DEBUG!"func call: regular";
                                 DEBUG!"reading";
                                 auto r = reader.read!(1);
-                                DEBUG!"read";
-                                funcIn = r.moveFront;
+                                funcIn = r.front;
                                 r.popFront;
-                                DEBUG!"finishing read";
                                 reader.finish();
-
+                                
+                                DEBUG!"passing off to user";
                                 mixin("stat = instance." ~ __traits(identifier, val) ~ "(funcIn, funcOut);");
                                 DEBUG!"starting write";
                                 writer.start();
@@ -215,8 +214,6 @@ class Service(T) : ServiceHandlerInterface {
                             
                             callMeta.data.cleanup();
                             grpc_call_unref(*callMeta.call);
-                            destroy(reader);
-                            destroy(writer);
                     };
 
                     static if(hasUDA!(val, ClientStreaming) && hasUDA!(val, ServerStreaming)) {
@@ -263,6 +260,8 @@ class Service(T) : ServiceHandlerInterface {
                     tag.methodName = _tag.methodName.dup;
                     tag.metadata = _tag.metadata.dup;
                     // TODO: fix metadata array so we can have more then sizeof(ubyte) workers!
+                    // this is an arbitrary limitation that i eventually want to fix- either by
+                    // adding an associated worker index, or something along those lines
                     tag.metadata[5] = cast(ubyte)workerIndex;
                     DEBUG!"tag.metadata: %s"(tag.metadata);
                     tlsTags ~= tag;
@@ -271,7 +270,6 @@ class Service(T) : ServiceHandlerInterface {
                     
                     _cq.requestCall(tag.method, tag, _server); 
                 }
-                
                 
                 while (_run) {
                     DEBUG!"hello from task %d"(workerIndex);
@@ -325,8 +323,10 @@ class Service(T) : ServiceHandlerInterface {
                             call.run(&_cq, tag);
                         }
 
-                        _cq.requestCall(tag.method, tag, _server);
-                        import interop.headers : gpr_free;
+                        grpc_call_error error = _cq.requestCall(tag.method, tag, _server);
+                        if (error != GRPC_CALL_OK) {
+                            ERROR!"could not request call %s"(error);
+                        }
                     }
                 }
             })();

@@ -19,6 +19,7 @@ if(__traits(isPOD, T) && __traits(compiles, cast(T)[0x01, 0x02])) {
     T o = cast(T)data;
 
     gpr_free(cast(void*)slice_c);
+    grpc_slice_unref(slice);
 
     return o;
 }
@@ -45,7 +46,7 @@ grpc_slice string_to_slice(string _string) {
 
 grpc_slice type_to_slice(T)(T type) {
     grpc_slice slice;
-    slice = grpc_slice_from_copied_buffer(cast(const(char*))type, type.length);
+    slice = grpc_slice_from_copied_buffer(cast(const(char*))type.ptr, type.length);
     return slice;
 }
     

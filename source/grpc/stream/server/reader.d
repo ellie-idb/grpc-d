@@ -34,6 +34,7 @@ class ServerReader(T) {
                 if(bf.length != 0) {
                     ubyte[] data = bf.readAll();
                     protobuf = data.fromProtobuf!T();
+                    data.length = 0;
                 }
 
                 yield(protobuf);

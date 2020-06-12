@@ -9,14 +9,16 @@ import grpc.common.call;
 
 class ServerWriter(T) {
     private {
+        BatchCall _op;
         CompletionQueue!"Next"* _cq;
         Tag* _tag;
         bool _started;
     }
 
     bool start() {
-        BatchCall _op = new BatchCall();
-        scope(exit) destroy(_op);
+        DEBUG!"reset op";
+        _op.reset();
+        DEBUG!"add to array";
 
         _op.addOp(new SendInitialMetadataOp()); 
 
@@ -35,8 +37,7 @@ class ServerWriter(T) {
             return false;
         }
 
-        BatchCall _op = new BatchCall();
-        scope(exit) destroy(_op);
+        _op.reset();
         ubyte[] _out = obj.toProtobuf.array;
         DEBUG!"constructing";
         _op.addOp(new SendMessageOp(_out));
@@ -54,9 +55,8 @@ class ServerWriter(T) {
 
         bool ok = false;
 
-        BatchCall _op = new BatchCall();
-        scope(exit) destroy(_op);
-
+        _op.reset();
+        DEBUG!"reset, running";
         _op.addOp(new SendStatusFromServerOp(cast(grpc_status_code)_stat.code, _stat.message));
         _op.run(_cq, _tag);
 
@@ -66,6 +66,7 @@ class ServerWriter(T) {
     this(CompletionQueue!"Next"* cq, Tag* tag) {
         _cq = cq;
         _tag = tag;
+        _op = new BatchCall();
     }
 
     ~this() {
