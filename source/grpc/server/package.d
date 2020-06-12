@@ -1,73 +1,80 @@
 module grpc.server;
-import grpc.logger;
 import interop.headers;
-import grpc.common.cq;
+import grpc.core.mutex;
+import grpc.core.resource;
 import grpc.core.tag;
 import grpc.core;
-import grpc.stream.server.reader;
-import grpc.stream.server.writer;
 import grpc.common.call;
-
-import google.rpc.status;
-
-import core.atomic;
-import core.thread;
-import fearless;
+import grpc.common.cq;
 import grpc.service;
+import grpc.logger;
+import google.rpc.status;
+import core.thread;
 
-struct ServerPtr {
-    grpc_server* server;
-    alias server this;
+class NotificationThread : Thread {
+    this() {
+        super(&run);
+    }
+        
+private:
+    Server* srv;
+    void run() {
+        int count = 0;
+        bool run = true;
+        while(run) {
+            auto item = srv.masterQueue.next(10.seconds);
+            if(item.type == GRPC_OP_COMPLETE) {
+                DEBUG!"MAIN QUEUE: New event"();
+                Tag* tag = cast(Tag*)item.tag;
+                DEBUG!"item.tag: %x"(item.tag);
+                DEBUG!"tag.metadata: %s"(tag.metadata);
+                DEBUG!"services: %d"(srv.services.keys.length);
+                DEBUG!"Adding to service queue %s"(srv.services.keys[tag.metadata[2]]);
+                srv.services[srv.services.keys[tag.metadata[2]]].addToQueue(tag);
+            }
+            else if(item.type == GRPC_QUEUE_TIMEOUT) {
+                DEBUG!"Re-enabling GC while we're timed out.."();
+                srv.collecting = true;
+            }
+            else if(item.type == GRPC_QUEUE_SHUTDOWN) {
+                run = false;
+            }
+        }
+    }
 }
 
-import std.container.dlist;
 
-class Server 
+struct Server 
 {
     private {
+        GPRMutex mutex;
+        SharedResource _server;
         ServiceHandlerInterface[string] services;
         bool started;
     }
+    
+    @property inout(grpc_server)* handle() inout @trusted pure nothrow {
+        return cast(typeof(return)) _server.handle;
+    }
+    
+    void lock() {
+        mutex.lock;
+    }
+    
+    void unlock() {
+        mutex.unlock;
+    }
 
-    Exclusive!ServerPtr* server_;
     CompletionQueue!"Next" masterQueue;
     /* 
        Thread which runs the main loop
     */
 
-    __gshared bool run_;
+    __gshared bool _run;
     __gshared bool collecting;
 
     // Fires 
 
-    class NotificationThread : Thread {
-        this() {
-            super(&run);
-        }
-    private:
-        void run() {
-            int count = 0;
-            while(run_) {
-                auto item = masterQueue.next(10.seconds);
-                if(item.type == GRPC_OP_COMPLETE) {
-                    DEBUG!"MAIN QUEUE: New event"();
-                    Tag* tag = cast(Tag*)item.tag;
-                    DEBUG!"item.tag: %x"(item.tag);
-                    DEBUG!"tag.metadata: %s"(tag.metadata);
-                    DEBUG!"services: %d"(services.keys.length);
-                    DEBUG!"Adding to service queue %s"(services.keys[tag.metadata[2]]);
-                    services[services.keys[tag.metadata[2]]].addToQueue(tag);
-                }
-                else if(item.type == GRPC_QUEUE_TIMEOUT) {
-                    DEBUG!"Re-enabling GC while we're timed out.."();
-                    collecting = true;
-                }
-                else if(item.type == GRPC_QUEUE_SHUTDOWN) {
-                    run_ = false;
-                }
-            }
-        }
-    }
 
     NotificationThread notifier;
 
@@ -75,10 +82,11 @@ class Server
         import std.format;
         import std.string : toStringz;
         string fmt = format!"%s:%d"(host, port);
+        
+        lock;
+        scope(exit) unlock;
 
-        auto server = server_.lock();
-
-        auto status = grpc_server_add_insecure_http2_port(server.server, fmt.toStringz);
+        auto status = grpc_server_add_insecure_http2_port(handle, fmt.toStringz);
         if(status == port) {
             INFO!"server binded to %s"(fmt);
             return true;
@@ -89,16 +97,18 @@ class Server
 
     void registerQueue(ref CompletionQueue!"Next" queue) {
         auto ptr = queue.ptr();
-
-        auto server = server_.lock();
-        grpc_server_register_completion_queue(server.server, ptr, null); 
+        lock;
+        scope(exit) unlock;
+        grpc_server_register_completion_queue(handle, ptr, null); 
     }
 
     void wait() {
-        while(run_) {
+        bool run = true;
+        while(run) {
             foreach(service; services) {
                 if (service.runners() == 0) {
                     DEBUG!"service dead??"();
+                    run = false;
                 }
             }
 
@@ -132,9 +142,9 @@ class Server
         {
             import std.string;
             void* ptr;
-            auto server = server_.lock();
-            ptr = grpc_server_register_method(server.server, remoteName, null, payload_handle, flags);
-
+            lock;
+            ptr = grpc_server_register_method(handle, remoteName, null, payload_handle, flags);
+            unlock;
             return ptr;
         }
 
@@ -174,41 +184,42 @@ class Server
     }
 
     void finish() {
-        auto server = server_.lock(); 
-        grpc_server_start(server.server);
+        lock;
+        scope(exit) unlock;
+        grpc_server_start(handle);
         started = true;
     }
 
     void run() {
         foreach(service; services.keys) {
-            services[service].register(this);
+            services[service].register(&this);
         }
 
         notifier = new NotificationThread();
+        notifier.srv = &this;
         notifier.isDaemon = true;
         notifier.start();
-
     }
-
-    package this(grpc_channel_args args) {
-        mixin assertNotReady;
-
-        import std.concurrency;
-        run_ = true;
-
-        masterQueue = CompletionQueue!"Next"();
-
-        grpc_server* ptr = grpc_server_create(&args, null);
-        server_ = new Exclusive!ServerPtr(ptr);
-
-        registerQueue(masterQueue);
+    
+    package static Server opCall(grpc_channel_args args) @trusted {
+        Server obj;
+        grpc_server* srv = grpc_server_create(&args, null);
+        if (srv != null) {
+            obj.masterQueue = CompletionQueue!"Next"();
+            
+            static Exception release(shared(void)* ptr) @trusted nothrow {
+                return null;
+            }
+            
+            obj._server = SharedResource(cast(shared)srv, &release);
+            obj.mutex = GPRMutex();
+            obj.registerQueue(obj.masterQueue);
+        } else {
+            throw new Exception("server creation failed");
+        }
+        
+        return obj;
     }
-
-    @disable public this() {
-
-    }
-
-    ~this() {
-    }
-
+        
+    @disable this(this);
 }

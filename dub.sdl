@@ -6,10 +6,7 @@ license "proprietary"
 dependency "automem" version="~>0.6.2"
 dependency "grpc-d-interop" version="~master"
 dependency "protobuf" version="~>0.6.0"
-dependency "async" version="~>0.1.34"
-dependency "optional" version="~>1.0.0"
-dependency "fearless" version="~>0.0.2"
-dependency "mir-algorithm" version="~>3.8.13"
+
 libs "grpc" "grpcpp_channelz"
 configuration "library" {
 	targetType "library"

@@ -2,21 +2,10 @@ module grpc.common.metadata;
 import interop.headers;
 import grpc.common.cq;
 import grpc.core.utils;
-import fearless;
-import automem;
 import grpc.core.mutex;
 import grpc.core.resource;
 
 @nogc: 
-struct MetadataArrayWrapper {
-    alias metadata this;
-    grpc_metadata_array metadata;
-} 
-
-struct MetadataWrapper {
-    alias metadata this;
-    grpc_metadata metadata;
-}
 
 /*
     INFO: This ARRAY SHOULD *NEVER* be shared across threads.

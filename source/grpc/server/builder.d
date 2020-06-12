@@ -29,7 +29,7 @@ class ServerBuilder {
         _server.registerService!T();
     }
 
-    Server build() {
+    Server* build() {
         grpc_channel_args args;
         args.num_args = 1;
 
@@ -42,11 +42,11 @@ class ServerBuilder {
         _a ~= arg;
 
         args.args = _a.ptr; 
-        _server = new Server(args);
+        _server = Server(args);
 
         _server.bind("0.0.0.0", 50051);
 
-        return _server;
+        return &_server;
     }
 
 

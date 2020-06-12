@@ -3,8 +3,6 @@ import grpc.logger;
 import interop.headers;
 import std.typecons;
 import grpc.core.tag;
-import optional;
-import fearless;
 import grpc.core;
 import grpc.core.mutex;
 import grpc.core.resource;
@@ -54,7 +52,7 @@ struct CompletionQueue(string T)
     }
 
     import grpc.server;
-    grpc_call_error requestCall(void* method, Tag* tag, ref Server _server) @trusted {
+    grpc_call_error requestCall(void* method, Tag* tag, Server* _server) @trusted {
         DEBUG!"hmm"();
         auto ctx = &tag.ctx;
         assert(ctx != null, "context null");
@@ -68,7 +66,9 @@ struct CompletionQueue(string T)
             DEBUG!"unlocked context mutex"();
         }
         
-        auto server_ptr = _server.server_.lock();
+        auto server_ptr = _server.handle();
+        _server.lock;
+        scope(exit) _server.unlock;
         DEBUG!"Got server lock"();
 
         auto global_cq = _server.masterQueue.ptr(); 

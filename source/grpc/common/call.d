@@ -2,12 +2,10 @@ module grpc.common.call;
 import grpc.logger;
 import interop.headers;
 import grpc.common.cq;
-import fearless;
 import grpc.core.utils;
 import grpc.core.resource;
 import grpc.common.metadata;
 import grpc.common.byte_buffer;
-import grpc.server : ServerPtr;
 import grpc.core.mutex;
 import core.memory : GC;
 

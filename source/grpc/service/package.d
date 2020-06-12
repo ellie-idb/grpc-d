@@ -1,8 +1,7 @@
 module grpc.service;
 import grpc.logger;
 import core.thread;
-import fearless;
-import grpc.server : ServerPtr, Server;
+import grpc.server : Server;
 import grpc.common.call;
 import google.rpc.status;
 import grpc.core.tag;
@@ -13,7 +12,7 @@ import grpc.core.utils;
 
 //should/can be overridden by clients
 interface ServiceHandlerInterface {
-    bool register(Server server);
+    bool register(Server* server);
     void addToQueue(Tag* t);
     void stop();
     ulong runners();
@@ -51,7 +50,7 @@ class Service(T) : ServiceHandlerInterface {
         __gshared void*[string] registeredMethods;
         __gshared string[] methodNames;
         __gshared Queue!(Tag*) _serviceQueue;
-        __gshared Server _server;
+        __gshared Server* _server;
         __gshared void function(CompletionQueue!"Next"*, T, Tag*)[string] _handlers;
         __gshared TaskPool _servicerPool;
 
@@ -107,7 +106,7 @@ class Service(T) : ServiceHandlerInterface {
 
     // this function will always be called by main()
 
-    bool register(Server server) {
+    bool register(Server* server) {
         alias parent = BaseTypeTuple!T[1];
 
         _server = server;
@@ -235,7 +234,7 @@ class Service(T) : ServiceHandlerInterface {
             }();
         }
 
-        for (int i = 0; i < 8; i++) {
+        for (int i = 0; i < 64; i++) {
             auto t = task!(
             () {
                 /* First, request all calls (this will be done when the Server requests us to initialize) */
