@@ -25,20 +25,18 @@ import std.container.dlist;
 class Server 
 {
     private {
-        Exclusive!ServerPtr* server_;
-
-        CompletionQueue!"Next" masterQueue;
-
         ServiceHandlerInterface[string] services;
-
         bool started;
     }
 
+    Exclusive!ServerPtr* server_;
+    CompletionQueue!"Next" masterQueue;
     /* 
        Thread which runs the main loop
     */
 
     __gshared bool run_;
+    __gshared bool collecting;
 
     // Fires 
 
@@ -50,12 +48,18 @@ class Server
         void run() {
             int count = 0;
             while(run_) {
+                import core.memory : GC;
+                GC.disable;
                 auto item = masterQueue.next(10.seconds);
                 if(item.type == GRPC_OP_COMPLETE) {
-                    DEBUG("MAIN QUEUE: New event");
-                    Tag tag = *cast(Tag*)item.tag;
-
+                    DEBUG!"MAIN QUEUE: New event"();
+                    Tag* tag = cast(Tag*)item.tag;
+                    DEBUG!"Adding to service queue %d"(services.keys[tag.metadata[2]]);
                     services[services.keys[tag.metadata[2]]].addToQueue(tag);
+                }
+                else if(item.type == GRPC_QUEUE_TIMEOUT) {
+                    DEBUG!"Re-enabling GC while we're timed out.."();
+                    collecting = true;
                 }
                 else if(item.type == GRPC_QUEUE_SHUTDOWN) {
                     run_ = false;
@@ -75,27 +79,48 @@ class Server
 
         auto status = grpc_server_add_insecure_http2_port(server.server, fmt.toStringz);
         if(status == port) {
-            INFO("server binded to ", fmt);
+            INFO!"server binded to %s"(fmt);
             return true;
         } 
 
         return false;
     }
 
-    void registerQueue(CompletionQueue!"Next" queue) {
+    void registerQueue(ref CompletionQueue!"Next" queue) {
         auto ptr = queue.ptr();
 
         auto server = server_.lock();
-        grpc_server_register_completion_queue(server.server, ptr.cq, null); 
+        grpc_server_register_completion_queue(server.server, ptr, null); 
     }
 
     void wait() {
         while(run_) {
+            foreach(service; services) {
+                if (service.runners() == 0) {
+                    DEBUG!"service dead??"();
+                }
+            }
+
+            if (collecting) {
+                import core.memory : GC;
+                GC.collect;
+                DEBUG!"done"();
+                collecting = false;
+            }
+
+            /*
+            
+            if (!notifier.isRunning()) {
+                DEBUG("notifier is NOT running!");
+                notifier.start();
+            }
+            */
+
             Thread.sleep(1.msecs);
         }
 
-        foreach(service; services.keys) {
-            services[service].stop();
+        foreach(service; services) {
+            service.stop();
         }
     }
 
@@ -157,7 +182,7 @@ class Server
 
     void run() {
         foreach(service; services.keys) {
-            services[service].register(server_);
+            services[service].register(this);
         }
 
         notifier = new NotificationThread();
@@ -172,7 +197,7 @@ class Server
         import std.concurrency;
         run_ = true;
 
-        masterQueue = new CompletionQueue!"Next"();
+        masterQueue = CompletionQueue!"Next"();
 
         grpc_server* ptr = grpc_server_create(&args, null);
         server_ = new Exclusive!ServerPtr(ptr);

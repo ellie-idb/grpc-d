@@ -4,11 +4,13 @@ import grpc.core.tag;
 import interop.headers;
 import grpc.common.cq; 
 import grpc.common.call;
+import grpc.core.utils;
+import grpc.common.batchcall;
 
 class ServerReader(T) {
     private {
-        RemoteCall _call;
-        Tag _tag;
+        CompletionQueue!"Next"* _cq;
+        Tag* _tag;
     }
 
     auto read(int count = 0, Duration d = 10.seconds) {
@@ -16,10 +18,11 @@ class ServerReader(T) {
         import std.stdio;
         import grpc.common.byte_buffer;
         import google.protobuf;
-        import grpc.common.batchcall;
 
         auto r = new Generator!T({
-            ByteBuffer bf = _call.data();
+            auto ctx = &_tag.ctx;
+            ByteBuffer bf = ctx.data;
+            BatchCall batch = new BatchCall();
             if(count == 1) {
                 T protobuf;
                 if(bf.length != 0) {
@@ -44,37 +47,43 @@ class ServerReader(T) {
                     try { 
                         protobuf = data.fromProtobuf!T();
                     } catch(Exception e) {
-                        ERROR("Deserialization fault: ", e.msg);
-                        ERROR(data);
-                        ERROR("Byte buffer length: ", bf.length);
+                        ERROR!"Deserialization fault: %s"(e.msg);
+                        ERROR!"%s"(data);
+                        ERROR!"Byte buffer length: %d"(bf.length);
 
                         return;
                     }
 
                     yield(protobuf);
 
-                    BatchCall batch = new BatchCall(_call);
                     batch.addOp(new RecvMessageOp(bf));
-                    auto stat = batch.run(_tag, d);
+                    auto stat = batch.run(_cq, _tag, d);
                     if(stat != GRPC_CALL_OK) {
-                        ERROR("READ ERROR: ", stat);
+                        ERROR!"READ ERROR: %s"(stat);
                         return;
                     }
 
                 }
             }
-            BatchCall batch = new BatchCall(_call);
-            int cancelled = 0;
-            batch.addOp(new RecvCloseOnServerOp(&cancelled));
-            auto stat = batch.run(_tag, 1.msecs);
         });
 
         return r;
     }
 
-    this(ref RemoteCall call, ref Tag tag) {
+    void finish() {
+        int cancelled = 0;
+        auto ctx = &_tag.ctx;
+        BatchCall batch = new BatchCall();
+        batch.addOp(new RecvCloseOnServerOp(&cancelled));
+        DEBUG!"running!"();
+        auto stat = batch.run(_cq, _tag);
+    }
+
+
+
+    this(CompletionQueue!"Next"* cq, Tag* tag) {
         import std.stdio;
-        _call = call;
+        _cq = cq;
         _tag = tag;
     }
 

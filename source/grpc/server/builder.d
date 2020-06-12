@@ -23,9 +23,9 @@ class ServerBuilder {
         return _port;
     }
 
-    void register(T)() {
+    void register(T)() in {
         assert(_server !is null, "Server must be built before registering services..");
-
+    } do {
         _server.registerService!T();
     }
 

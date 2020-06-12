@@ -4,185 +4,131 @@ import interop.headers;
 import grpc.common.cq;
 import fearless;
 import grpc.core.utils;
-import grpc.core.tag;
+import grpc.core.resource;
 import grpc.common.metadata;
 import grpc.common.byte_buffer;
 import grpc.server : ServerPtr;
+import grpc.core.mutex;
+import core.memory : GC;
 
-struct CallWrapper {
-    alias _call this;
-    grpc_call* _call;
+struct CallContext {
+@safe:
+    GPRMutex mutex;
+    grpc_call** call;
+    CallDetails details;
+    MetadataArray metadata;
+    ByteBuffer data;
+
+    static CallContext opCall() @trusted {
+        CallContext obj;
+        obj.mutex = GPRMutex();
+        obj.details = CallDetails();
+        //obj.metadata = new MetadataArray();
+        obj.data = new ByteBuffer();
+        obj.call = cast(grpc_call**)gpr_zalloc((grpc_call**).sizeof); 
+        doNotMoveObject(cast(void*)obj.call, (grpc_call**).sizeof);
+
+        return obj;
+    }
+
+    ~this() @trusted {
+        gpr_free(cast(void*)call);
+        okToMoveObject(cast(void*)call);
+    }
+
+    @disable this(this);
 }
 
-struct CallDetailsWrapper {
-    alias details this;
-    grpc_call_details details;
-}
-
-class CallDetails {
+struct CallDetails {
+@safe:
     private {
-        Exclusive!CallDetailsWrapper* _details;
+        GPRMutex mutex;
+        SharedResource _details;
     }
 
-    auto borrow() {
-        return _details.lock();
+    @property inout(grpc_call_details)* handle() inout @trusted pure nothrow {
+        return cast(typeof(return)) _details.handle;
     }
 
-    @property string method() {
-        auto details = _details.lock();
-        return slice_to_string(details.method); 
+    @property string method() @trusted {
+        mutex.lock;
+        scope(exit) mutex.unlock;
+        return slice_to_string(handle.method); 
     }
 
-    @property string host() {
-        auto details = _details.lock();
-        return slice_to_string(details.host);
+    @property string host() @trusted {
+        mutex.lock;
+        scope(exit) mutex.unlock;
+        return slice_to_string(handle.host);
     }
 
     @property uint flags() {
-        auto details = _details.lock();
-        uint flags = details.flags;
+        mutex.lock;
+        scope(exit) mutex.unlock;
+        uint flags = handle.flags;
         return flags;
     }
 
-    @property Duration deadline() {
-        auto details = _details.lock();
-        Duration d = timespectodur(details.deadline);
+    @property Duration deadline() @trusted {
+        mutex.lock;
+        scope(exit) mutex.unlock;
+        Duration d = timespectodur(handle.deadline);
         return d;
     }
 
-    this() {
-        grpc_call_details __details;
-        grpc_call_details_init(&__details);
-        _details = new Exclusive!CallDetailsWrapper(__details);
-    }
+    static CallDetails opCall() @trusted {
+        CallDetails obj;
+        obj.mutex = GPRMutex();
+        grpc_call_details* details;
 
-    ~this() {
-        auto details = _details.lock();
-        grpc_call_details_destroy(&details.details);
-    }
-
-    package this(ref grpc_call_details details) {
-        _details = new Exclusive!CallDetailsWrapper(details);
-    }
-}
-
-class RemoteCall {
-    private {
-        gpr_timespec deadline;
-        Exclusive!CallWrapper* _call;
-        CompletionQueue!"Pluck" _registeredCq;
-        CompletionQueue!"Next" _globalCq;
-        ByteBuffer _data;
-        CallDetails _callDetails;
-        MetadataArray _metadataArray;
-    }
-
-    auto borrow() {
-        return _call.lock();
-    }
-
-    grpc_call_error requestGenericCall(ref Tag _tag, Exclusive!ServerPtr* server_) {
-        import std.stdio;
-        auto server_ptr = server_.lock();
-        DEBUG("Got server lock");
-
-        auto method_cq = _registeredCq.ptr();
-        DEBUG("Got method lock");
-
-        DEBUG("Attempting to lock global");
-        auto global_cq = _globalCq.ptr();
-
-        DEBUG("Got global lock");
-
-        grpc_call** call;
-        {
-            auto __call = _call.lock();
-            call = &__call._call;
+        if ((details = cast(grpc_call_details*)gpr_zalloc((grpc_call_details).sizeof)) != null) {
+            doNotMoveObject(details, (grpc_call_details).sizeof);
+            static Exception release(shared(void)* ptr) @trusted nothrow {
+                grpc_call_details_destroy(cast(grpc_call_details*)ptr);
+                gpr_free(cast(void*)ptr);
+                okToMoveObject(cast(void*)ptr);
+                return null;
+            }
+            
+            grpc_call_details_init(details);
+            obj._details = SharedResource(cast(shared)details, &release);
+        } else {
+            throw new Exception("memory allocation failed");
         }
-        DEBUG("Got grpc_call* lock");
 
-        auto data = _data.borrow();
-        DEBUG("Got byte buffer");
-
-        auto callDetails = _callDetails.borrow();
-        DEBUG("Got call data lock");
-
-        auto metadata = _metadataArray.borrow();
-        DEBUG("Got metadata lock");
-
-        DEBUG(_tag.metadata);
-
-        DEBUG("Registering generic call");
-        return grpc_server_request_call(server_ptr, call, &callDetails.details, &metadata.metadata, global_cq, global_cq, cast(void*)_tag);
+        return obj;
     }
 
 
-    grpc_call_error requestCall(void* _method, ref Tag _tag, Exclusive!ServerPtr* server_) {
-        import std.stdio;
-        auto server_ptr = server_.lock();
-        DEBUG("Got server lock");
+    @disable this(this);
+}
 
-        auto method_cq = _registeredCq.ptr();
-        DEBUG("Got method lock");
+struct Tag {
+@safe:
+    void* method;
+    string methodName;
+    ubyte[16] metadata;
+    CallContext ctx;
 
-        DEBUG("Attempting to lock global");
-        auto global_cq = _globalCq.ptr();
-
-        DEBUG("Got global lock");
-
-        auto __call = _call.lock();
-        DEBUG("Got grpc_call* lock");
-
-        auto data = _data.borrow();
-        DEBUG("Got byte buffer");
-
-        auto callDetails = _callDetails.borrow();
-        DEBUG("Got call data lock");
-
-        auto metadata = _metadataArray.borrow();
-        DEBUG("Got metadata lock");
-
-        DEBUG(_tag.metadata);
-
-        DEBUG("Registering..");
-
-        grpc_call_error error = grpc_server_request_registered_call(server_ptr,
-                cast(void*)_method, &__call._call, &deadline, &metadata.metadata,
-                &data._buf, method_cq, global_cq, &_tag);
-
-
-        return error;
+    static Tag* opCall() @trusted {
+        Tag* obj = cast(Tag*)gpr_zalloc((Tag).sizeof);
+        DEBUG!"new tag created at: %x size: %d"(obj, (Tag).sizeof);
+        assert(obj != null, "memory allocation fail");
+        doNotMoveObject(obj, (Tag).sizeof);
+        obj.ctx = CallContext();
+        return obj;
     }
 
-    @property ByteBuffer data() {
-        return _data;
-    }
-
-    @property CompletionQueue!"Pluck" cq() {
-        return _registeredCq;
-    }
-
-    @property CallDetails details() {
-        return _callDetails;
-    }
-
-    @property MetadataArray metadata() {
-        return _metadataArray;
-    }
-
-    this(CompletionQueue!"Next" globalCq, CompletionQueue!"Pluck" cq) {
-        _data = new ByteBuffer(); 
-        _globalCq = globalCq;
-        _registeredCq = cq;
-
-        _call = new Exclusive!CallWrapper(cast(grpc_call*)0);
-        _callDetails = new CallDetails();
-        _metadataArray = new MetadataArray();
+    static void free(Tag* tag) @trusted {
+        okToMoveObject(tag);
+        destroy(tag.ctx);
+        gpr_free(tag);
     }
 
     ~this() {
-
+        assert(0, "deconstructor should never be called");
     }
+
+
+    @disable this(this);
 }
-
-

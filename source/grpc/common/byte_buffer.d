@@ -17,7 +17,7 @@ class ByteBuffer {
     
     auto borrow() {
         import std.stdio;
-        DEBUG("bf: ", _buf.isLocked);
+        DEBUG!"bf: %d"(_buf.isLocked);
         return _buf.lock();
     }
 
@@ -54,14 +54,14 @@ class ByteBuffer {
             grpc_byte_buffer_reader_init(&reader, buf);
 
             grpc_byte_buffer* _2 = grpc_raw_byte_buffer_from_reader(&reader);
-            ERROR("byte buffer did not match what was expected?");
+            ERROR!"byte buffer did not match what was expected?"();
 
             { 
-                ERROR(cast(ubyte[])byte_buffer_to_string(_2));
+                ERROR!"byte buffer: %s"(cast(ubyte[])byte_buffer_to_string(_2));
             }
 
-            ERROR(grpc_byte_buffer_length(_2));
-            ERROR(buf._buf.data.raw.slice_buffer.length);
+            ERROR!"length: %d"(grpc_byte_buffer_length(_2));
+            ERROR!"length: %d"(buf._buf.data.raw.slice_buffer.length);
 
             grpc_byte_buffer_destroy(_2);
             grpc_byte_buffer_reader_destroy(&reader);

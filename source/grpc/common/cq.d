@@ -6,202 +6,138 @@ import grpc.core.tag;
 import optional;
 import fearless;
 import grpc.core;
-public import core.time;
+import grpc.core.mutex;
+import grpc.core.resource;
+import grpc.core.utils;
 
 //queue ok/ok type
 alias NextStatus = Tuple!(bool, bool);
 
 
 // TODO: add mutexes 
-gpr_timespec durtotimespec(Duration time) {
-    gpr_timespec t;
-    t.clock_type = GPR_CLOCK_MONOTONIC; 
-    MonoTime curr = MonoTime.currTime;
-    auto _time = curr + time;
-    import std.stdio;
-
-    auto nsecs = ticksToNSecs(_time.ticks).nsecs;
-
-    nsecs.split!("seconds", "nsecs")(t.tv_sec, t.tv_nsec);
-    
-    return t;
-}
-
-Duration timespectodur(gpr_timespec time) {
-    return time.tv_sec.seconds + time.tv_nsec.nsecs;
-}
 
 import core.thread;
 import std.parallelism;
 
-grpc_event getNext(bool* started, Exclusive!CompletionQueuePtr* cq, gpr_timespec _dead) {
-    grpc_event t_;
-
-    grpc_completion_queue* ptr;
-    { 
-        auto _ptr = cq.lock();
-        ptr = _ptr.cq;
-    }
-
-    *started = true;
-    t_ = grpc_completion_queue_next(ptr, _dead, null);
-    return t_;
-}
-grpc_event getTagNext(bool* started, Exclusive!CompletionQueuePtr* cq, void* tag, gpr_timespec _dead) {
-    *started = true;
-
-    grpc_completion_queue* ptr;
-    { 
-        auto _ptr = cq.lock();
-        ptr = _ptr.cq;
-    }
-
-    grpc_event t = grpc_completion_queue_pluck(ptr, tag, _dead, null);
-    return t;
-}
-
 import std.traits;
 
-struct CompletionQueuePtr {
-    grpc_completion_queue *cq;
-    alias cq this;
-}
-
-class CompletionQueue(string T) 
-    if(T == "Next" || T == "Pluck") 
+struct CompletionQueue(string T) 
+    if(T == "Next") 
 {
+@safe:
     private { 
-        TaskPool asyncAwait;
-        Exclusive!CompletionQueuePtr* _cq;
-
-        mixin template ptrNoLock() {
-            grpc_completion_queue* cq = (){ return _cq.lock().cq; }();
-        }
-
-
+        GPRMutex mutex;
+        SharedResource _cq;
     }
 
-    bool locked() {
-        return _cq.isLocked;
+    @property inout(grpc_completion_queue)* handle() inout @trusted pure nothrow {
+        return cast(typeof(return)) _cq.handle;
     }
 
-    auto ptr(string file = __FILE__) {
-        import std.stdio;
-        return _cq.lock();
+    /* Preserved for compatibility */
+    auto ptr(string file = __FILE__) @trusted {
+        return handle;
     }
 
     static if(T == "Pluck") {
-        grpc_event next(ref Tag tag, Duration time) {
-            gpr_timespec t = durtotimespec(time);
-            grpc_event _evt;
-
-            mixin ptrNoLock;
-            _evt = grpc_completion_queue_pluck(cq, &tag, t, null); 
-
-            return _evt;
-        }
-
-        auto asyncNext(ref Tag tag, Duration time) {
-            gpr_timespec deadline = durtotimespec(time);
-
-            bool started = false;
-
-            auto task = task!getTagNext(&started, _cq, &tag, deadline); 
-            asyncAwait.put(task);
-
-            while(!started) {
-
-            }
-            return task;
-        }
-
+        // TODO: add Pluck/Callback types
     }
     static if(T == "Next") {
-        grpc_event next(Duration time) {
+        grpc_event next(Duration time) @trusted {
             gpr_timespec t = durtotimespec(time);
             grpc_event _evt;
 
-            /*
-            void awaitNext(ref grpc_event t, gpr_timespec deadline) {
-                while(true) {
-                    assert(cq != null, "cq was null");
-                    import std.stdio;
-                    t = grpc_completion_queue_next(cq, deadline, null);
-                    Fiber.yield();
-                }
-            }
-            */
+            _evt = grpc_completion_queue_next(handle, t, null);
 
-            mixin ptrNoLock;
-            
-            _evt = grpc_completion_queue_next(cq, t, null);
-
-            /*
-            Fiber fiber = new Fiber(() => awaitNext(_evt, t)); 
-            fiber.call();
-            */
-            
             return _evt;
         }
+    }
 
-        auto asyncNext(Duration time) {
-            gpr_timespec deadline = durtotimespec(time);
-            bool started;
+    import grpc.server;
+    grpc_call_error requestCall(void* method, Tag* tag, ref Server _server) @trusted {
+        DEBUG!"hmm"();
+        auto ctx = &tag.ctx;
+        assert(ctx != null, "context null");
 
-            auto task = task!getNext(&started, _cq, deadline); 
-            asyncAwait.put(task);
-            while(!started) {
+        DEBUG!"locking context mutex"();
+        ctx.mutex.lock;
+        mutex.lock;
+        scope(exit) {
+            ctx.mutex.unlock;
+            mutex.unlock;
+            DEBUG!"unlocked context mutex"();
+        }
+        
+        auto server_ptr = _server.server_.lock();
+        DEBUG!"Got server lock"();
+
+        auto global_cq = _server.masterQueue.ptr(); 
+        DEBUG!"Got global cq lock"();
+
+        auto method_cq = handle();
+        DEBUG!"Locked self"();
+
+        auto details = ctx.details.handle();
+        DEBUG!"Got CallDetails"();
+
+        auto metadata = ctx.metadata.borrow();
+        DEBUG!"Got metadata lock"();
+
+        auto data = ctx.data.borrow();
+        DEBUG!"Locked byte buffer"();
+
+        DEBUG!"call: %x"(ctx.call);
+
+        grpc_call_error error = grpc_server_request_registered_call(server_ptr,
+                method, ctx.call, &details.deadline, &metadata.metadata,
+                &data._buf, method_cq, global_cq, tag);
+
+        DEBUG!"successfully reregistered"();
+
+        return error;
+
+    }
+
+
+    static CompletionQueue!T opCall() @trusted {
+        CompletionQueue!T obj;
+
+        grpc_completion_queue* cq = null;
+
+        static if (T == "Next") {
+            cq = grpc_completion_queue_create_for_next(null);
+        } else {
+        }
+
+        if (cq == null) {
+            throw new Exception("CQ creation error");
+        }
+
+        static Exception release(shared(void)* ptr) @trusted nothrow {
+            grpc_completion_queue_shutdown(cast(grpc_completion_queue*)ptr);
+            grpc_event evt;
+
+            while((evt.type == GRPC_QUEUE_TIMEOUT)) {
+                gpr_timespec t = durtotimespec(1.msecs);
+
+                evt = grpc_completion_queue_next(cast(grpc_completion_queue*)ptr, t, null);
+
+                import std.stdio;
             }
 
-            return task;
-        }
-    }
-
-    this() {
-        CompletionQueuePtr _c_cq;
-        static if(T == "Pluck") {
-            _c_cq.cq = grpc_completion_queue_create_for_pluck(null);
-            asyncAwait = new TaskPool(6);
+            return null;
         }
 
-        static if(T == "Next") {
-            _c_cq.cq = grpc_completion_queue_create_for_next(null);
-            asyncAwait = new TaskPool(1);
-        }
+        obj._cq = SharedResource(cast(shared)cq, &release);
+        obj.mutex = GPRMutex();
 
-        _cq = new Exclusive!CompletionQueuePtr(_c_cq.cq);
-
-        asyncAwait.isDaemon = true;
-
+        return obj;
     }
 
-    void shutdown() {
-        mixin ptrNoLock;
-        grpc_completion_queue_shutdown(cq);
-//        grpc_event evt = next(dur!"msecs"(100));
+    @disable this(this);
 
-        grpc_event evt;
-        while((evt.type == GRPC_QUEUE_TIMEOUT)) {
-            Tag tag;
-            static if(T == "Pluck") {
-                evt = next(tag, dur!"msecs"(100));
-            } else {
-                evt = next(dur!"msecs"(100));
-            }
-            import std.stdio;
-            DEBUG(evt.type != GRPC_QUEUE_TIMEOUT);
-        }
+    void shutdown() @trusted {
     }
 
-    this(grpc_completion_queue* _ptr) {
-        mixin assertNotReady;
-
-        _cq = new Exclusive!CompletionQueuePtr(_ptr);
-    }
-
-    ~this() {
-        auto ptr = _cq.lock();
-        grpc_completion_queue_destroy(cast(grpc_completion_queue*)(ptr.cq));
-    }
 }
 

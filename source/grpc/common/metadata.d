@@ -4,6 +4,7 @@ import grpc.common.cq;
 import grpc.core.utils;
 import fearless;
 
+@nogc: 
 struct MetadataArrayWrapper {
     alias metadata this;
     grpc_metadata_array metadata;
@@ -14,39 +15,9 @@ struct MetadataWrapper {
     grpc_metadata metadata;
 }
 
-class Metadata {
-    private { 
-        Exclusive!MetadataWrapper* _metadata;
-    }
-
-    auto borrow() {
-        return _metadata.lock();
-    }
-
-    @property string key() {
-        auto metadata = _metadata.lock();
-        return slice_to_string(metadata.key);
-    }
-
-    @property string value() {
-        auto metadata = _metadata.lock();
-        return slice_to_string(metadata.value);
-    }
-
-    @property uint flags() {
-        auto metadata = _metadata.lock();
-        uint flags = metadata.flags;
-        return flags;
-    }
-
-    this(grpc_metadata meta) {
-        _metadata = new Exclusive!MetadataWrapper(meta);
-    }
-}
-
-
 class MetadataArray {
     private {
+        gpr_mu mutex;
         Exclusive!MetadataArrayWrapper* _metadata;
     }
 

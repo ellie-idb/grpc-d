@@ -1,6 +1,7 @@
 module grpc.channel;
 import interop.headers;
 import grpc.common.cq;
+import grpc.core.utils;
 
 class Channel {
 	private {

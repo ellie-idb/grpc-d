@@ -10,36 +10,25 @@ enum Verbosity {
     Error = 2
 };
 
+import std.array, std.format;
 static __gshared Logger gLogger;
 
-void INFO(string file = __MODULE__, int line = __LINE__, A...)(lazy A args) @trusted {
-    string message = "";
-    foreach(arg; args) {
-        import std.conv : to;
-        message ~= to!string(arg); 
-    }
-
-    gLogger.log(Verbosity.Info, message, file, line);
+void INFO(string format, string file = __MODULE__, int line = __LINE__, A...)(lazy A args) @trusted {
+    auto msg = appender!string;
+    formattedWrite(msg, format, args);
+    gLogger.log(Verbosity.Info, msg.data, file, line);
 }
 
-void DEBUG(string file = __MODULE__, int line = __LINE__, A...)(lazy A args) @trusted {
-    string message = "";
-    foreach(arg; args) {
-        import std.conv : to;
-        message ~= to!string(arg); 
-    }
-
-    gLogger.log(Verbosity.Debug, message, file, line);
+void DEBUG(string format, string file = __MODULE__, int line = __LINE__, A...)(lazy A args) @trusted {
+    auto msg = appender!string;
+    formattedWrite(msg, format, args);
+    gLogger.log(Verbosity.Debug, msg.data, file, line);
 }
 
-void ERROR(string file = __MODULE__, int line = __LINE__, A...)(lazy A args) @trusted  {
-    string message = "";
-    foreach(arg; args) {
-        import std.conv : to;
-        message ~= to!string(arg); 
-    }
-
-    gLogger.log(Verbosity.Error, message, file, line);
+void ERROR(string format, string file = __MODULE__, int line = __LINE__, A...)(lazy A args) @trusted {
+    auto msg = appender!string;
+    formattedWrite(msg, format, args);
+    gLogger.log(Verbosity.Error, msg.data, file, line);
 }
 
 class Logger {
@@ -89,7 +78,8 @@ class Logger {
     void log(Verbosity v, string message, string file = __MODULE__, int line = __LINE__) {
         import std.string : toStringz;
         const(char)* msg = message.toStringz;
-        gpr_log_message(file.toStringz, line, cast(gpr_log_severity)v, msg); 
+        const(char)* f = file.toStringz;
+        gpr_log_message(f, line, cast(gpr_log_severity)v, msg); 
     }
 
     this(Verbosity _minVerbosity = Verbosity.Info, string info = "", string warning = "", string error = "", string debug_ = "") {
@@ -109,7 +99,7 @@ class Logger {
 
 void assertHandler(string file, ulong line, string message) nothrow {
     try { 
-        ERROR("ASSERT: ", message, " at ", file, ":", line);
+        ERROR!"ASSERT: %s at %s:%d"(message, file, line);
     } catch(Exception e) {
 
     }

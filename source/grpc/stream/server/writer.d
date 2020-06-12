@@ -8,17 +8,17 @@ import grpc.common.call;
 
 class ServerWriter(T) {
     private {
-        RemoteCall _callDetails;
-        Tag _tag;
+        CompletionQueue!"Next"* _cq;
+        Tag* _tag;
         bool _started;
     }
 
     bool start() {
-        BatchCall _op = new BatchCall(_callDetails);
+        BatchCall _op = new BatchCall();
 
         _op.addOp(new SendInitialMetadataOp()); 
 
-        _op.run(_tag);
+        _op.run(_cq, _tag);
 
         _started = true;
 
@@ -33,11 +33,11 @@ class ServerWriter(T) {
             return false;
         }
 
-        BatchCall _op = new BatchCall(_callDetails);
+        BatchCall _op = new BatchCall();
         ubyte[] _out = obj.toProtobuf.array;
         _op.addOp(new SendMessageOp(_out));
 
-        _op.run(_tag);
+        _op.run(_cq, _tag);
 
         return true;
     }
@@ -50,16 +50,16 @@ class ServerWriter(T) {
 
         bool ok = false;
 
-        BatchCall _op = new BatchCall(_callDetails);
+        BatchCall _op = new BatchCall();
 
         _op.addOp(new SendStatusFromServerOp(cast(grpc_status_code)_stat.code, _stat.message));
-        _op.run(_tag);
+        _op.run(_cq, _tag);
 
         return true;
     }
 
-    this(ref RemoteCall _call, ref Tag tag) {
-        _callDetails = _call;
+    this(CompletionQueue!"Next"* cq, Tag* tag) {
+        _cq = cq;
         _tag = tag;
     }
 

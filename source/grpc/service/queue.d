@@ -1,6 +1,9 @@
 module grpc.service.queue;
 import core.sync.semaphore;
-
+import interop.headers;
+debug import std.stdio;
+import core.atomic;
+import grpc.core.utils;
 
 // class adopted from some answer on stackoverflow/d forums
 
@@ -11,22 +14,28 @@ class Queue(T) {
     }
  
     private Node* _first;
-    private Node* _last = new Node(null,null);
+    private Node* _last = new Node(T.init,null);
 
     @property int count() {
-        synchronized(countLock) { 
-            return _count;
-        }
+        gpr_mu_lock(&mutex);
+        scope(exit) gpr_mu_unlock(&mutex);
+        return _count;
     }
 
-    private int   _count = 0;
-    private Object countLock = new Object;
-    private Object putLock = new Object;
-    private Semaphore wait;
+    private shared int   _count = 0;
+    private gpr_cv cv;
+    private gpr_mu mutex;
  
     this() {
-        wait = new Semaphore();
+        gpr_cv_init(&cv);
+        gpr_mu_init(&mutex);
+        
         this._first = this._last;
+    }
+
+    ~this() {
+        gpr_cv_destroy(&cv);
+        gpr_mu_destroy(&mutex);
     }
  
     /**
@@ -34,17 +43,17 @@ class Queue(T) {
     */
 
     void put(T value) {
-        synchronized(putLock) {
+        debug writeln("locking internal mutex");
+        gpr_mu_lock(&mutex);
+        { 
             Node* newLast = new Node(null,null);
             this._last.payload = value;
             this._last.next = newLast;
             this._last = newLast;
-       
-            synchronized(countLock) {
-                _count++;
-                wait.notify();
-            }
+            atomicOp!"+="(_count, 1);
         }
+        gpr_mu_unlock(&mutex);
+        gpr_cv_signal(&cv);
     }
    
  
@@ -52,33 +61,50 @@ class Queue(T) {
         To be iterable with `foreach` loop.
     */
 
-    void notify() {
-        wait.wait();
+    void notify(gpr_timespec timeout = durtotimespec(10.seconds)) {
+        if (gpr_mu_trylock(&mutex) == 0) {
+            return; //retry the lock
+        }
+        scope(exit) gpr_mu_unlock(&mutex);
+        if (_count == 0) {
+            gpr_cv_wait(&cv, &mutex, timeout);
+        } else if (_count <= 0) {
+            assert(0, "count should never be this");
+            //debug writeln("count SHOULD NOT BE BELOW 0, ", _count);
+        } else {
+            //debug writeln("skipping wait, count: ", _count);
+        }
     }
 
-    bool empty() const {
-        synchronized(countLock) { 
-            return this._count == 0;
-        }
+    bool empty() {
+        gpr_mu_lock(&mutex);
+        scope(exit) gpr_mu_unlock(&mutex);
+        return this._count == 0;
     }
  
     ///ditto
-    void popFront() {
+    T popFront() in {
         assert (!this.empty);
-        synchronized(putLock) { 
+    } do {
+        gpr_mu_lock(&mutex);
+        scope(exit) gpr_mu_unlock(&mutex);
+        T obj;
+        if (this._first != null) {
+            obj = cast(T)(this._first.payload);
+
             this._first = this._first.next;
         }
-        synchronized(countLock) {
-            _count--;
-        }
+        atomicOp!"-="(_count, 1);
+        return obj;
     }
  
     ///ditto
-    T front() const {
+    T front() in { 
         assert (!this.empty);
-        synchronized(putLock) { 
-            return cast(T)(this._first.payload);
-        }
+    } do {
+        gpr_mu_lock(&mutex);
+        scope(exit) gpr_mu_unlock(&mutex);
+        return cast(T)(this._first.payload);
     }
  
 }

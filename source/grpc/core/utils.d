@@ -1,5 +1,6 @@
 module grpc.core.utils;
 import interop.headers;
+public import core.time;
 
 string slice_to_string(grpc_slice slice) {
     import std.string : fromStringz;
@@ -42,14 +43,43 @@ string byte_buffer_to_string(grpc_byte_buffer* bytebuf) {
 grpc_slice string_to_slice(string _string) {
     grpc_slice slice;
     import std.string : toStringz;
-    slice = grpc_slice_ref(grpc_slice_from_copied_buffer(_string.toStringz, _string.length));
+    slice = grpc_slice_from_copied_buffer(_string.toStringz, _string.length);
     return slice;
 }
 
 grpc_slice type_to_slice(T)(T type) {
     grpc_slice slice;
-    slice = grpc_slice_ref(grpc_slice_from_copied_buffer(cast(const(char*))type, type.length));
+    slice = grpc_slice_from_copied_buffer(cast(const(char*))type, type.length);
     return slice;
 }
     
+gpr_timespec durtotimespec(Duration time) nothrow {
+    gpr_timespec t;
+    t.clock_type = GPR_CLOCK_MONOTONIC; 
+    MonoTime curr = MonoTime.currTime;
+    auto _time = curr + time;
+    import std.stdio;
 
+    auto nsecs = ticksToNSecs(_time.ticks).nsecs;
+
+    nsecs.split!("seconds", "nsecs")(t.tv_sec, t.tv_nsec);
+    
+    return t;
+}
+
+Duration timespectodur(gpr_timespec time) nothrow {
+    return time.tv_sec.seconds + time.tv_nsec.nsecs;
+}
+
+import core.memory : GC;
+void doNotMoveObject(void* ptr, size_t len) @trusted nothrow {
+    GC.addRange(ptr, len);
+    GC.setAttr(cast(void*)ptr, GC.BlkAttr.NO_MOVE);
+    GC.addRoot(ptr);
+}
+
+void okToMoveObject(void* ptr) @trusted nothrow {
+    GC.removeRoot(ptr);
+    GC.clrAttr(cast(void*)ptr, GC.BlkAttr.NO_MOVE);
+    GC.removeRange(ptr);
+}
