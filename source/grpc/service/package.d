@@ -163,6 +163,8 @@ class Service(T) : ServiceHandlerInterface {
                             DEBUG!"grabbing mutex lock";
                             callMeta.mutex.lock;
                             scope(exit) callMeta.mutex.unlock;
+                            
+                            DEBUG!"locked!";
                             ServerReader!(input) reader = new ServerReader!(input)(queue, _tag);
                             ServerWriter!(output) writer = new ServerWriter!(output)(queue, _tag);
                             
@@ -214,6 +216,8 @@ class Service(T) : ServiceHandlerInterface {
                             
                             callMeta.data.cleanup();
                             grpc_call_unref(*callMeta.call);
+                            destroy(writer);
+                            destroy(reader);
                     };
 
                     static if(hasUDA!(val, ClientStreaming) && hasUDA!(val, ServerStreaming)) {

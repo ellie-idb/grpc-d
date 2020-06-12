@@ -85,11 +85,7 @@ class ServerReader(T) {
         BatchCall batch = new BatchCall();
         batch.addOp(new RecvCloseOnServerOp(&cancelled));
         DEBUG!"running!"();
-        try {
-            auto stat = batch.run(_cq, _tag);
-        } catch(Exception e) {
-            ERROR!"crash"();
-        }
+        auto stat = batch.run(_cq, _tag);
     }
 
 

@@ -31,10 +31,6 @@ struct CallContext {
     ~this() @trusted {
         DEBUG!"freed call context";
         gpr_free(cast(void*)call);
-        destroy(mutex);
-        destroy(details);
-        destroy(metadata);
-        destroy(data);
     }
 
     @disable this(this);

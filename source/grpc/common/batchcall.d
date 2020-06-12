@@ -37,7 +37,6 @@ class SendInitialMetadataOp : RemoteOp {
     }
     
     ~this() {
-        destroy(array);
     }
 }
 
@@ -217,15 +216,17 @@ class BatchCall {
         CallContext* ctx = &_tag.ctx;
         grpc_op[] _ops;
 
-        foreach(op; ops) {
+        foreach(op; ops.data) {
             _ops ~= op.value();
         }
 
-        DEBUG!"starting batch on tag: %x"(_tag);
+        DEBUG!"starting batch on tag (%x, ops: %d)"(_tag, _ops.length);
         auto status = grpc_call_start_batch(*ctx.call, _ops.ptr, _ops.length, _tag, null);  
         if(status == GRPC_CALL_OK) {
             import core.time;
+            DEBUG!"proceeding cq";
             cq.next(d);
+            DEBUG!"finished batch on tag: %x"(_tag);
         } else {
             ERROR!"STATUS: %s"(status);
         }

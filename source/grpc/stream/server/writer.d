@@ -17,7 +17,7 @@ class ServerWriter(T) {
 
     bool start() {
         _op.reset();
-
+        DEBUG!"reset, adding op";
         _op.addOp(new SendInitialMetadataOp()); 
 
         _op.run(_cq, _tag);
