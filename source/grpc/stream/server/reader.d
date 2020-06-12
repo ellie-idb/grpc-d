@@ -72,7 +72,6 @@ class ServerReader(T) {
 
                 }
                 
-                destroy(batch);
             }
         });
 

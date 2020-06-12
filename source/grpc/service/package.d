@@ -214,10 +214,8 @@ class Service(T) : ServiceHandlerInterface {
                             writer.finish(stat);
                             DEBUG!"func call: done";
                             
-                            callMeta.data.cleanup();
+                            //callMeta.data.cleanup();
                             grpc_call_unref(*callMeta.call);
-                            destroy(writer);
-                            destroy(reader);
                     };
 
                     static if(hasUDA!(val, ClientStreaming) && hasUDA!(val, ServerStreaming)) {
@@ -279,7 +277,7 @@ class Service(T) : ServiceHandlerInterface {
                     DEBUG!"hello from task %d"(workerIndex);
                     _serviceQueue.notify(); // if the notify gets called, we have an exclusive lock on the mutex
                     {
-                        DEBUG!"hit event on task %d"(workerIndex);
+                        //DEBUG!"hit event on task %d"(workerIndex);
                         if (_serviceQueue.empty()) {
                             DEBUG!"service queue was actually empty..";
                             _serviceQueue.unlock;
@@ -360,7 +358,7 @@ class Service(T) : ServiceHandlerInterface {
             _funcCount[STREAM_CLIENT_SERVER] = 0;
         }
 
-            }
+    }
         
 }
     

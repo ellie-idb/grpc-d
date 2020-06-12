@@ -123,7 +123,6 @@ class RecvInitialMetadataOp : RemoteOp {
     }
     
     ~this() {
-        destroy(_metadata);
     }
 
 }
@@ -211,8 +210,8 @@ class BatchCall {
 
     /* requires the caller to have a lock on the CallContext */
     grpc_call_error run(CompletionQueue!"Next"* cq, Tag* _tag, Duration d = 1.msecs) {
-        enforce(sanityCheck(), "failed sanity check");
-        enforce(_tag != null, "tag should never be null");
+        assert(sanityCheck(), "failed sanity check");
+        assert(_tag != null, "tag should never be null");
         CallContext* ctx = &_tag.ctx;
         grpc_op[] _ops;
 

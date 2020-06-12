@@ -19,7 +19,7 @@ class Queue(T) {
     @property int count() {
         gpr_mu_lock(&mutex);
         scope(exit) gpr_mu_unlock(&mutex);
-        return _count;
+        return atomicLoad(_count);
     }
 
     private shared int   _count = 0;
@@ -91,7 +91,7 @@ class Queue(T) {
     
     /* ASSUMES YOU ARE LOCKED */
     bool empty() {
-        return this._count == 0;
+        return atomicLoad(_count) == 0;
     }
  
     ///ditto
