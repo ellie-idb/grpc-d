@@ -12,12 +12,31 @@ class ServerReader(T) {
         CompletionQueue!"Next"* _cq;
         Tag* _tag;
     }
+    import grpc.common.byte_buffer;
+    import google.protobuf;
+
+
+    auto readOne(Duration d = 10.seconds) {
+
+        assert(_tag != null, "tag shouldn't be null");
+
+        T protobuf = T.init;
+        assert(_tag.ctx.data.valid, "byte buffer should always be valid");
+        ulong len = _tag.ctx.data.length;
+        DEBUG!"bf.length: %d"(len);
+        if(len != 0) {
+            ubyte[] data = _tag.ctx.data.readAll();
+            protobuf = data.fromProtobuf!T();
+        }
+        return protobuf;
+    }
+
+
+
 
     auto read(int count = 0)(Duration d = 10.seconds) {
         import std.concurrency;
         import std.stdio;
-        import grpc.common.byte_buffer;
-        import google.protobuf;
 
         auto r = new Generator!T({
             auto ctx = &_tag.ctx;

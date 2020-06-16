@@ -11,45 +11,6 @@ import grpc.logger;
 import google.rpc.status;
 import core.thread;
 
-class NotificationThread : Thread {
-    this() {
-        super(&run);
-    }
-        
-private:
-    __gshared bool shutdownPath = false;
-    __gshared bool _run = true;
-    Server* srv;
-    void run() {
-        int count = 0;
-        while(_run) {
-            auto item = srv.masterQueue.next(10.seconds);
-            if(item.type == GRPC_OP_COMPLETE) {
-                DEBUG!"MAIN QUEUE: New event"();
-                Tag* tag = cast(Tag*)item.tag;
-                DEBUG!"item.tag: %x"(item.tag);
-                
-                if (shutdownPath) {
-                    DEBUG!"in shutdown path, not adding to queue";
-                    continue;
-                }
-                
-                DEBUG!"tag.metadata: %s"(tag.metadata);
-                DEBUG!"services: %d"(srv.services.keys.length);
-                DEBUG!"Adding to service queue %s"(srv.services.keys[tag.metadata[2]]);
-                srv.services[srv.services.keys[tag.metadata[2]]].addToQueue(tag);
-            }
-            else if(item.type == GRPC_QUEUE_TIMEOUT) {
-                DEBUG!"Re-enabling GC while we're timed out.."();
-            }
-            else if(item.type == GRPC_QUEUE_SHUTDOWN) {
-                _run = false;
-            }
-        }
-    }
-}
-
-
 struct Server 
 {
     private {
@@ -57,6 +18,7 @@ struct Server
         SharedResource _server;
         ServiceHandlerInterface[string] services;
         bool started;
+        bool shutdownPath;
     }
     
     @property inout(grpc_server)* handle() inout @trusted pure nothrow {
@@ -76,13 +38,10 @@ struct Server
        Thread which runs the main loop
     */
 
-    __gshared bool _run;
-    __gshared bool collecting;
+    bool _run;
+    bool collecting;
 
     // Fires 
-
-
-    NotificationThread notifier;
 
     bool bind(string host, ushort port) {
         import std.format;
@@ -110,8 +69,45 @@ struct Server
 
     void wait() {
         while(_run) {
-        
-            Thread.sleep(1.msecs);
+            auto item = masterQueue.next(10.seconds);
+            if(item.type == GRPC_OP_COMPLETE) {
+                DEBUG!"MAIN QUEUE: New event"();
+                Tag* tag = cast(Tag*)item.tag;
+                //DEBUG!"item.tag: %x"(item.tag);
+                
+                if (shutdownPath) {
+                    DEBUG!"in shutdown path, not adding to queue";
+                    continue;
+                }
+
+                if (tag == null) {
+                    continue;
+                }
+
+                if (tag.metadata[0] != 0xDE) {
+                    continue;
+                }
+
+                if (tag.metadata[2] >= services.keys.length) {
+                    continue;
+                }
+                
+                //DEBUG!"tag.metadata: %s"(tag.metadata);
+                //DEBUG!"services: %d"(srv.services.keys.length);
+                //DEBUG!"Adding to service queue %s"(srv.services.keys[tag.metadata[2]]);
+                services[services.keys[tag.metadata[2]]].addToQueue(tag);
+                DEBUG!"placed onto queue";
+            }
+            else if(item.type == GRPC_QUEUE_TIMEOUT) {
+                foreach(service; services) {
+                    if (service.runners() == 0) {
+                        ERROR!"service crashed?";
+                    }
+                }
+            }
+            else if(item.type == GRPC_QUEUE_SHUTDOWN) {
+                _run = false;
+            }
         }
         
         shutdown();
@@ -119,12 +115,11 @@ struct Server
     
     void shutdown() @trusted {
         DEBUG!"stopping all services";
-        notifier.shutdownPath = true;
+        shutdownPath = true;
         foreach(service; services) {
             service.stop();
         }
         grpc_server_shutdown_and_notify(handle, masterQueue.handle, null);
-        notifier._run = false;
     }
 
     void registerService(T)() {
@@ -188,11 +183,6 @@ struct Server
         foreach(service; services.keys) {
             services[service].register(&this);
         }
-
-        notifier = new NotificationThread();
-        notifier.srv = &this;
-        notifier.isDaemon = true;
-        notifier.start();
     }
     
     package static Server opCall(grpc_channel_args args) @trusted {

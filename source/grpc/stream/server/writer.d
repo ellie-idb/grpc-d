@@ -6,38 +6,36 @@ import google.rpc.status;
 import grpc.common.cq;
 import grpc.common.batchcall;
 import grpc.common.call;
+import core.atomic;
 
 class ServerWriter(T) {
     private {
-        BatchCall _op;
         CompletionQueue!"Next"* _cq;
         Tag* _tag;
-        bool _started;
+        shared(bool) _started;
     }
 
-    bool start() {
-        _op.reset();
-        DEBUG!"reset, adding op";
+    bool start(Tag* tag) {
+        BatchCall _op = new BatchCall();
         _op.addOp(new SendInitialMetadataOp()); 
 
-        _op.run(_cq, _tag);
+        _op.run(_cq, tag);
 
-        _started = true;
+        atomicStore(_started, true);
 
-        return false;
+        return true;
     }
 
     bool write(T obj) {
         import std.array;
         import google.protobuf;
         
-        if(!_started) {
+        if(!atomicLoad(_started)) {
             return false;
         }
+        BatchCall _op = new BatchCall();
 
-        _op.reset();
         ubyte[] _out = obj.toProtobuf.array;
-        DEBUG!"constructing";
         _op.addOp(new SendMessageOp(_out));
 
         DEBUG!"running";
@@ -47,13 +45,13 @@ class ServerWriter(T) {
     }
 
     bool finish(Status _stat) {
-        if(!_started) {
+        if(!atomicLoad(_started)) {
             return false;
         }
 
         bool ok = false;
 
-        _op.reset();
+        BatchCall _op = new BatchCall();
         DEBUG!"reset, running";
         _op.addOp(new SendStatusFromServerOp(cast(grpc_status_code)_stat.code, _stat.message));
         _op.run(_cq, _tag);
@@ -64,7 +62,6 @@ class ServerWriter(T) {
     this(CompletionQueue!"Next"* cq, Tag* tag) {
         _cq = cq;
         _tag = tag;
-        _op = new BatchCall();
     }
 
     ~this() {

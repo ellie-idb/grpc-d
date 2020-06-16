@@ -43,18 +43,124 @@ mixin template Writer(T) {
 }
 
 class Service(T) : ServiceHandlerInterface {
+    class ServicerThread : Thread {
+        this() {
+            super(&run);
+        }
+        
+        ~this() {
+            INFO!"service thread";
+        }
+        
+        Tag*[] tags;
+        Queue!(Tag*) servicerQueue;
+        void function(CompletionQueue!"Next"*, T, Tag*)[] handlers;
+        ulong workerIndex;
+        T _serviceInstance;
+    
+    private:
+        void run() {
+            /* First, request all calls (this will be done when the Server requests us to initialize) */
+            /* As well, create a thread-local completion queue */
+            _serviceInstance = new T();
+            auto _cq = CompletionQueue!"Next"();
+            servicerQueue = new Queue!(Tag*)();
+
+            // DUPLICATE every tag into a thread-local tag cache, and mark it such
+            Tag*[] tlsTags;
+            foreach (_tag; tags) {
+                Tag* tag = Tag();
+                DEBUG!"duplicating tags for method (%x)"(tag);
+                tag.method = _tag.method;
+                tag.methodName = _tag.methodName.dup;
+                tag.metadata = _tag.metadata.dup;
+                // TODO: fix metadata array so we can have more then sizeof(ubyte) workers!
+                // this is an arbitrary limitation that i eventually want to fix- either by
+                // adding an associated worker index, or something along those lines
+                tag.metadata[5] = cast(ubyte)workerIndex;
+                DEBUG!"tag.metadata: %s"(tag.metadata);
+                tlsTags ~= tag;
+                
+                // this OFFICIALLY binds the _cq to a specific tag
+                
+                _cq.requestCall(tag.method, tag, _server); 
+            }
+            
+            while (_run) {
+                DEBUG!"hello from task %d"(workerIndex);
+                servicerQueue.notify(); // if the notify gets called, we have an exclusive lock on the mutex
+                {
+                    //DEBUG!"hit event on task %d"(workerIndex);
+                    if (servicerQueue.empty()) {
+                        DEBUG!"service queue was actually empty..";
+                        servicerQueue.unlock;
+                        continue;
+                    }
+                    DEBUG!"grabbing tag";
+                    Tag* tag = servicerQueue.front;
+                    DEBUG!"got tag: %x"(tag);
+                    if (tag == null) {
+                        ERROR!"got null tag?";
+                        servicerQueue.unlock;
+                        continue;
+                    }
+                    
+                    // xxx: should never happen
+                    if (tag.metadata[5] != cast(ubyte)workerIndex) {
+                        DEBUG!"hit a tag that isn't meant for us (%d vs %d)"(tag.metadata[5], cast(ubyte)workerIndex);
+                        Thread.sleep(100.msecs);
+                        servicerQueue.unlock;
+                        servicerQueue.signal;
+                        continue;
+                    }
+                    
+                    // otherwise, it's our tag and we have to pop it off 
+                    servicerQueue.pop;
+                    servicerQueue.unlock;
+
+                    if (tag.metadata[4] >= tlsTags.length) {
+                        ERROR!"got a large tag??";
+                        continue;
+                    }
+
+                    tag = tlsTags[tag.metadata[4]]; // grab it off of our local cache
+                    string remoteName = tag.methodName;
+                    DEBUG!"done";
+
+                    try { 
+                        handlers[tag.metadata[4]](&_cq, _serviceInstance, tag);
+                    } catch(Exception e) {
+                        import grpc.common.batchcall;
+                        import interop.headers;
+                        ERROR!"CAUGHT EXCEPTION: %s"(e.msg);
+
+                        BatchCall call = new BatchCall();
+                        int cancelled = 0;
+                        call.addOp(new RecvCloseOnServerOp(&cancelled));
+                        call.addOp(new SendInitialMetadataOp());
+                        call.addOp(new SendStatusFromServerOp(GRPC_STATUS_INTERNAL, e.msg));
+                        call.run(&_cq, tag);
+                    }
+
+                    grpc_call_error error = _cq.requestCall(tag.method, tag, _server);
+                    if (error != GRPC_CALL_OK) {
+                        ERROR!"could not request call %s"(error);
+                    }
+                }
+            }
+        }
+    }
     import std.typecons;
     import std.traits;
     private {
         int[funcType] _funcCount;
-
-        __gshared void*[string] registeredMethods;
-        __gshared string[] methodNames;
-        __gshared Queue!(Tag*) _serviceQueue;
-        __gshared Server* _server;
-        __gshared void function(CompletionQueue!"Next"*, T, Tag*)[string] _handlers;
-        __gshared TaskPool _servicerPool;
-
+        
+        void*[string] registeredMethods;
+        string[] methodNames;
+        Server* _server;
+        ThreadGroup threads;
+        ServicerThread[] _threads; // do not ever use
+        ulong workingThreads;
         immutable ulong _serviceId;
 
         enum funcType {
@@ -64,19 +170,22 @@ class Service(T) : ServiceHandlerInterface {
             STREAM_CLIENT_SERVER
         }
 
-        __gshared T _serviceInstance;
-        __gshared bool _run;
+        bool _run;
     }
 
-    __gshared int _totalServiced;
+    int _totalServiced;
     int _totalQueued;
-    int n_threads;
 
     // function may be called by another thread other then the main() thread
     // make sure that doesnt muck up
-
+    
     ulong runners() {
-        return _servicerPool.size;
+        ulong r = 0;
+        foreach(thread; threads) {
+            if (thread.isRunning()) r += 1;
+        }
+        
+        return r;
     }
 
     int totalServiced() {
@@ -88,13 +197,15 @@ class Service(T) : ServiceHandlerInterface {
     }
 
     int queueLength() {
-        return _serviceQueue.count;
+        return 0;
     }
     
     void stop() {
         _run = false;
-        _servicerPool.stop();
-        _serviceQueue.notifyAll();
+        threads.joinAll();
+        foreach(thread; _threads) {
+            thread.servicerQueue.notifyAll();
+        }
     }
 
     void addToQueue(Tag* t) {
@@ -102,9 +213,18 @@ class Service(T) : ServiceHandlerInterface {
             return;
         }
 
-        _serviceQueue.put(t);
+        assert(t.metadata[5] < workingThreads, "should never have a metadata value this high?"); 
+
+        ServicerThread tgt = _threads[t.metadata[5]];
+
+        if (!tgt.isRunning()) {
+            DEBUG!"WTF?";
+            tgt.join();
+            return;
+        }
+
+        tgt.servicerQueue.put(t);
         DEBUG!"placed tag on queue";
-        _totalQueued++;
     }
 
 
@@ -114,8 +234,8 @@ class Service(T) : ServiceHandlerInterface {
         alias parent = BaseTypeTuple!T[1];
 
         _server = server;
-        __gshared Tag*[] tags;
-
+        Tag*[] tags;
+        void function(CompletionQueue!"Next"*, T, Tag*)[] _handlers;
         static foreach(i, val; getSymbolsByUDA!(parent, RPC)) {
             () {
                 /*
@@ -157,12 +277,15 @@ class Service(T) : ServiceHandlerInterface {
                     rpcTag.metadata[1] = cast(ubyte)_funcCount[NORMAL];
                     rpcTag.metadata[2] = cast(ubyte)_serviceId;
                     rpcTag.metadata[4] = cast(ubyte)i;
-                    _handlers[remoteName] = (CompletionQueue!"Next"* queue, T instance, Tag* _tag) {
+                    _handlers ~= (CompletionQueue!"Next"* queue, T instance, Tag* _tag) {
                             DEBUG!"hello";
-                            auto callMeta = &_tag.ctx;
                             DEBUG!"grabbing mutex lock";
-                            callMeta.mutex.lock;
-                            scope(exit) callMeta.mutex.unlock;
+                            if (_tag == null) {
+                                ERROR!"received null tag";
+                                return;
+                            }
+                            _tag.ctx.mutex.lock;
+                            scope(exit) _tag.ctx.mutex.unlock;
                             
                             DEBUG!"locked!";
                             ServerReader!(input) reader = new ServerReader!(input)(queue, _tag);
@@ -176,15 +299,13 @@ class Service(T) : ServiceHandlerInterface {
                             static if(hasUDA!(val, ClientStreaming) == 0 && hasUDA!(val, ServerStreaming) == 0) {
                                 DEBUG!"func call: regular";
                                 DEBUG!"reading";
-                                auto r = reader.read!(1);
-                                funcIn = r.moveFront;
-                                r.popFront;
+                                funcIn = reader.readOne();
                                 reader.finish();
                                 
                                 DEBUG!"passing off to user";
                                 mixin("stat = instance." ~ __traits(identifier, val) ~ "(funcIn, funcOut);");
                                 DEBUG!"starting write";
-                                writer.start();
+                                writer.start(_tag);
                                 DEBUG!"writing";
                                 writer.write(funcOut);
                                 DEBUG!"done write";
@@ -199,12 +320,10 @@ class Service(T) : ServiceHandlerInterface {
                                 mixin("stat = instance." ~ __traits(identifier, val) ~ "(reader, funcOut);");
                                 writer.start();
                                 writer.write(funcOut);
-                            } 
+                            }   
                             else static if(hasUDA!(val, ServerStreaming)) {
                                 DEBUG("func call: server streaming");
-                                auto r = reader.read(1);
-                                funcIn = r.moveFront;
-                                r.popFront;
+                                funcIn = reader.readOne();
 
                                 writer.start();
                                 mixin("stat = instance." ~ __traits(identifier, val) ~ "(funcIn, writer);");
@@ -214,8 +333,18 @@ class Service(T) : ServiceHandlerInterface {
                             writer.finish(stat);
                             DEBUG!"func call: done";
                             
-                            //callMeta.data.cleanup();
-                            grpc_call_unref(*callMeta.call);
+                            //destroy(reader);
+                            //destroy(writer);
+                            
+                            
+                            
+                           /*
+                                IMPORTANT:
+                                As we are now done with the call,
+                                we have to unref it, so that the call is freed,
+                                as well as any memory allocated in the call arena.
+                            */
+                            grpc_call_unref(*_tag.ctx.call);
                     };
 
                     static if(hasUDA!(val, ClientStreaming) && hasUDA!(val, ServerStreaming)) {
@@ -246,93 +375,15 @@ class Service(T) : ServiceHandlerInterface {
             }();
         }
 
-        for (int i = 0; i < 1; i++) {
-            auto t = task!(
-            () {
-                /* First, request all calls (this will be done when the Server requests us to initialize) */
-                /* As well, create a thread-local completion queue */
-                auto _cq = CompletionQueue!"Next"();
-                ulong workerIndex = _servicerPool.workerIndex();
-                // DUPLICATE every tag into a thread-local tag cache, and mark it such
-                Tag*[] tlsTags;
-                foreach (_tag; tags) {
-                    Tag* tag = Tag();
-                    DEBUG!"duplicating tags for method (%x)"(tag);
-                    tag.method = _tag.method;
-                    tag.methodName = _tag.methodName.dup;
-                    tag.metadata = _tag.metadata.dup;
-                    // TODO: fix metadata array so we can have more then sizeof(ubyte) workers!
-                    // this is an arbitrary limitation that i eventually want to fix- either by
-                    // adding an associated worker index, or something along those lines
-                    tag.metadata[5] = cast(ubyte)workerIndex;
-                    DEBUG!"tag.metadata: %s"(tag.metadata);
-                    tlsTags ~= tag;
-                    
-                    // this OFFICIALLY binds the _cq to a specific tag
-                    
-                    _cq.requestCall(tag.method, tag, _server); 
-                }
-                
-                while (_run) {
-                    DEBUG!"hello from task %d"(workerIndex);
-                    _serviceQueue.notify(); // if the notify gets called, we have an exclusive lock on the mutex
-                    {
-                        //DEBUG!"hit event on task %d"(workerIndex);
-                        if (_serviceQueue.empty()) {
-                            DEBUG!"service queue was actually empty..";
-                            _serviceQueue.unlock;
-                            continue;
-                        }
-
-                        DEBUG!"grabbing tag";
-                        Tag* tag = _serviceQueue.front;
-                        DEBUG!"got tag: %x"(tag);
-                        if (tag == null) {
-                            ERROR!"got null tag?";
-                            _serviceQueue.unlock;
-                            continue;
-                        }
-                        
-                        if (tag.metadata[5] != cast(ubyte)workerIndex) {
-                            DEBUG!"hit a tag that isn't meant for us";
-                            _serviceQueue.unlock;
-                            _serviceQueue.signal;
-                            continue;
-                        }
-                        
-                        // otherwise, it's our tag and we have to pop it off 
-                        _serviceQueue.pop;
-                        _serviceQueue.unlock;
-
-                        string remoteName = tag.methodName;
-
-                        DEBUG!"done";
-
-                        try { 
-                            _handlers[remoteName](&_cq, _serviceInstance, tag);
-                        } catch(Exception e) {
-                            import grpc.common.batchcall;
-                            import interop.headers;
-
-                            ERROR!"CAUGHT EXCEPTION: %s"(e.msg);
-
-                            BatchCall call = new BatchCall();
-                            int cancelled = 0;
-                            call.addOp(new RecvCloseOnServerOp(&cancelled));
-                            call.addOp(new SendInitialMetadataOp());
-                            call.addOp(new SendStatusFromServerOp(GRPC_STATUS_INTERNAL, e.msg));
-                            call.run(&_cq, tag);
-                        }
-
-                        grpc_call_error error = _cq.requestCall(tag.method, tag, _server);
-                        if (error != GRPC_CALL_OK) {
-                            ERROR!"could not request call %s"(error);
-                        }
-                    }
-                }
-            })();
-
-            _servicerPool.put(t);
+        for (ulong i = 0; i < workingThreads; i++) {
+            auto t = new ServicerThread();
+            threads.add(t);
+            _threads ~= t;
+            t.handlers = _handlers.dup;
+            t.workerIndex = i;
+            t.isDaemon = true;
+            t.tags = tags.dup;
+            t.start();
 
         }
 
@@ -343,13 +394,12 @@ class Service(T) : ServiceHandlerInterface {
     this(ulong serviceId, ref CompletionQueue!"Next" cq, void*[string] methodTable) {
 
         _run = true;
-        _serviceQueue = new Queue!(Tag*)();
-        _serviceInstance = new T();
-        _servicerPool = new TaskPool();
 
         registeredMethods = methodTable.dup;
         _serviceId = serviceId;
+        threads = new ThreadGroup();
 
+        workingThreads = 4;
 
         with(funcType) { 
             _funcCount[NORMAL] = 0;

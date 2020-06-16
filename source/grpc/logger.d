@@ -99,7 +99,11 @@ class Logger {
     shared static this() {
         gLogger = new Logger();
         import core.exception;
-        core.exception.assertHandler = &assertHandler;
+        //core.exception.assertHandler = &assertHandler;
+    }
+    
+    shared static ~this() {
+        destroy(gLogger);
     }
 }
 
@@ -110,7 +114,6 @@ import core.time;
 void assertHandler(string file, ulong line, string message) nothrow {
     try { 
         ERROR!"ASSERT: %s at %s:%d"(message, file, line);
-        Thread.sleep(10.msecs);
         abort();
     } catch(Exception e) {
 

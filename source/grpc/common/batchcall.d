@@ -62,8 +62,6 @@ class SendMessageOp : RemoteOp {
     }
 
     ~this() {
-        DEBUG!"freeing send message";
-        destroy(_buf);
     }
 }
 
@@ -96,8 +94,6 @@ class SendStatusFromServerOp : RemoteOp {
 
     ~this() {
         grpc_slice_unref(_details);
-        destroy(_trailing_metadata);
-        destroy(_status);
     }
 }
 
@@ -201,7 +197,7 @@ class BatchCall {
     }
 
     void addOp(RemoteOp _op) {
-        ops ~= _op;
+        ops.put(_op);
     }
     
     import grpc.core.tag;
@@ -215,7 +211,7 @@ class BatchCall {
         CallContext* ctx = &_tag.ctx;
         grpc_op[] _ops;
 
-        foreach(op; ops.data) {
+        foreach(op; ops) {
             _ops ~= op.value();
         }
 
@@ -223,7 +219,6 @@ class BatchCall {
         auto status = grpc_call_start_batch(*ctx.call, _ops.ptr, _ops.length, _tag, null);  
         if(status == GRPC_CALL_OK) {
             import core.time;
-            DEBUG!"proceeding cq";
             cq.next(d);
             DEBUG!"finished batch on tag: %x"(_tag);
         } else {
@@ -241,9 +236,9 @@ class BatchCall {
 
     this() {
         ops = appender!(RemoteOp[]);
+        ops.reserve(5);
     }
 
     ~this() {
-        DEBUG!"freed batch op";
     }
 }

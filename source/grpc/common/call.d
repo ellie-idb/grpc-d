@@ -29,7 +29,6 @@ struct CallContext {
     }
 
     ~this() @trusted {
-        DEBUG!"freed call context";
         gpr_free(cast(void*)call);
     }
 
@@ -116,12 +115,10 @@ struct Tag {
     
     static void free(Tag* tag) @trusted {
         okToMoveObject(tag);
-        destroy(tag.ctx);
         gpr_free(tag);
     }
 
     ~this() {
-        assert(0, "deconstructor should never be called");
     }
 
 
