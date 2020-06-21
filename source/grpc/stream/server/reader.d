@@ -9,15 +9,13 @@ import grpc.common.batchcall;
 
 class ServerReader(T) {
     private {
-        CompletionQueue!"Next"* _cq;
-        Tag* _tag;
+        BatchCall batch;
+        CompletionQueue!"Next" _cq;
     }
     import grpc.common.byte_buffer;
     import google.protobuf;
 
-
-    auto readOne(Duration d = 10.seconds) {
-
+    auto readOne(Tag* _tag, Duration d = 10.seconds) {
         assert(_tag != null, "tag shouldn't be null");
 
         T protobuf = T.init;
@@ -30,8 +28,6 @@ class ServerReader(T) {
         }
         return protobuf;
     }
-
-
 
 
     auto read(int count = 0)(Duration d = 10.seconds) {
@@ -50,8 +46,9 @@ class ServerReader(T) {
                 assert(bf.valid, "byte buffer should always be valid");
                 
                 DEBUG!"bf.length: %d"(bf.length);
-                if(bf.length != 0) {
+                if(bf.length != 0 && bf.valid) {
                     ubyte[] data = bf.readAll();
+                    DEBUG!"attempting to deserde";
                     protobuf = data.fromProtobuf!T();
                 }
 
@@ -97,21 +94,17 @@ class ServerReader(T) {
         return r;
     }
 
-    void finish() {
-        int cancelled = 0;
-        auto ctx = &_tag.ctx;
-        BatchCall batch = new BatchCall();
-        batch.addOp(new RecvCloseOnServerOp(&cancelled));
+    void finish(Tag* tag) {
+        batch.reset;
+        batch.addOp(new RecvCloseOnServerOp());
         DEBUG!"running!"();
-        auto stat = batch.run(_cq, _tag);
+        auto stat = batch.run(_cq, tag);
     }
 
-
-
-    this(CompletionQueue!"Next"* cq, Tag* tag) {
+    this(CompletionQueue!"Next" cq) {
+        batch = new BatchCall();
         import std.stdio;
         _cq = cq;
-        _tag = tag;
     }
 
     ~this() {

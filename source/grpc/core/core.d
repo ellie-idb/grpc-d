@@ -8,16 +8,13 @@ import core.memory : GC;
 class GRPCModule {
     import std.stdio;
     shared static this() {
-//        thread_term();
-//        thread_setGCSignals(SIGRTMIN, SIGRTMIN + 2);
-//        thread_init();
         grpc.core.init();
-        debug writeln("gRPC " ~ grpc.core.version_string() ~ " started");
+//       debug writeln("gRPC " ~ grpc.core.version_string() ~ " started");
         __grpcmodule = new GRPCModule(); 
     }
 
     shared static ~this() {
-        debug writeln("gRPC " ~ grpc.core.version_string() ~ " shutting down");
+//        debug writeln("gRPC " ~ grpc.core.version_string() ~ " shutting down");
         grpc.core.shutdown();
     }
 }

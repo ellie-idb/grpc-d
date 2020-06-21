@@ -58,7 +58,7 @@ class SendMessageOp : RemoteOp {
     }
 
     this(ubyte[] message) {
-        _buf = ByteBuffer(message);
+        _buf = new ByteBuffer(message);
     }
 
     ~this() {
@@ -83,6 +83,7 @@ class SendStatusFromServerOp : RemoteOp {
         ret.data.send_status_from_server.status = _status;
         ret.data.send_status_from_server.trailing_metadata_count =  _trailing_metadata.count;
         ret.data.send_status_from_server.trailing_metadata = _trailing_metadata.data;
+
         return ret;
     }
 
@@ -140,10 +141,11 @@ class RecvMessageOp : RemoteOp {
     }
     
 
-    this(ByteBuffer* buf) {
-        _buf = buf;
+    this(ref ByteBuffer buf) {
+        _buf = &buf;
     }
 }
+
 /*
 
 class RecvStatusOnClientOp : RemoteOp {
@@ -160,7 +162,11 @@ class RecvStatusOnClientOp : RemoteOp {
 
 class RecvCloseOnServerOp : RemoteOp {
     private {
-        int* _cancelled;
+        int _cancelled = 0;
+    }
+
+    int cancelled() {
+        return _cancelled;
     }
 
     grpc_op_type type() {
@@ -170,13 +176,12 @@ class RecvCloseOnServerOp : RemoteOp {
     grpc_op value() {
         grpc_op ret;
         ret.op = type();
-        ret.data.recv_close_on_server.cancelled = _cancelled;
+        ret.data.recv_close_on_server.cancelled = &_cancelled;
 
         return ret;
     }
 
-    this(int* cancelled) {
-        _cancelled = cancelled;
+    this() {
     }
 }
 
@@ -205,10 +210,9 @@ class BatchCall {
     import grpc.common.cq;
 
     /* requires the caller to have a lock on the CallContext */
-    grpc_call_error run(CompletionQueue!"Next"* cq, Tag* _tag, Duration d = 1.msecs) {
+    grpc_call_error run(CompletionQueue!"Next" cq, Tag* _tag, Duration d = 1.msecs) {
         assert(sanityCheck(), "failed sanity check");
         assert(_tag != null, "tag should never be null");
-        CallContext* ctx = &_tag.ctx;
         grpc_op[] _ops;
 
         foreach(op; ops) {
@@ -216,7 +220,7 @@ class BatchCall {
         }
 
         DEBUG!"starting batch on tag (%x, ops: %d)"(_tag, _ops.length);
-        auto status = grpc_call_start_batch(*ctx.call, _ops.ptr, _ops.length, _tag, null);  
+        auto status = grpc_call_start_batch(*_tag.ctx.call, _ops.ptr, _ops.length, _tag, null);  
         if(status == GRPC_CALL_OK) {
             import core.time;
             cq.next(d);
@@ -228,9 +232,11 @@ class BatchCall {
         return status;
 
     }
-
     
     void reset() {
+        foreach(op; ops) {
+            destroy(op);
+        }
         ops.clear;
     }
 

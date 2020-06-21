@@ -4,7 +4,6 @@ public import core.time;
 
 string slice_to_string(grpc_slice slice) {
     import std.string : fromStringz;
-
     return slice_to_type!string(slice);
 }
 
@@ -19,19 +18,21 @@ if(__traits(isPOD, T) && __traits(compiles, cast(T)[0x01, 0x02])) {
     T o = cast(T)data;
 
     gpr_free(cast(void*)slice_c);
-    grpc_slice_unref(slice);
 
     return o;
 }
 
 string byte_buffer_to_string(grpc_byte_buffer* bytebuf) {
-        import std.stdio;
+        return byte_buffer_to_type!string(bytebuf);
+}
+
+T byte_buffer_to_type(T)(grpc_byte_buffer* bytebuf) {
         grpc_byte_buffer_reader reader;
         grpc_byte_buffer_reader_init(&reader, bytebuf);
         grpc_slice slices = grpc_byte_buffer_reader_readall(&reader);
-        string _s = slice_to_string(slices);
-        grpc_byte_buffer_reader_destroy(&reader);
+        T _s = slice_to_type!T(slices);
         grpc_slice_unref(slices);
+        grpc_byte_buffer_reader_destroy(&reader);
         return _s;
 }
 
@@ -46,7 +47,7 @@ grpc_slice string_to_slice(string _string) {
 
 grpc_slice type_to_slice(T)(T type) {
     grpc_slice slice;
-    slice = grpc_slice_from_copied_buffer(cast(const(char*))type, type.length);
+    slice = grpc_slice_from_copied_buffer(cast(const(char*))type.ptr, type.length);
     return slice;
 }
     
@@ -78,5 +79,5 @@ void doNotMoveObject(void* ptr, size_t len) @trusted nothrow {
 void okToMoveObject(void* ptr) @trusted nothrow {
     GC.removeRoot(ptr);
     GC.clrAttr(cast(void*)ptr, GC.BlkAttr.NO_MOVE);
-    GC.removeRange(ptr);
+//    GC.removeRange(ptr);
 }

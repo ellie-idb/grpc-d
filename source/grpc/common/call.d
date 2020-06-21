@@ -11,7 +11,7 @@ import core.memory : GC;
 
 struct CallContext {
 @safe:
-    GPRMutex mutex;
+    shared GPRMutex mutex;
     grpc_call** call;
     CallDetails details;
     MetadataArray metadata;
@@ -22,7 +22,7 @@ struct CallContext {
         obj.mutex = GPRMutex();
         obj.details = CallDetails();
         obj.metadata = MetadataArray();
-        obj.data = ByteBuffer();
+        obj.data = new ByteBuffer();
         obj.call = cast(grpc_call**)gpr_zalloc((grpc_call**).sizeof); 
 
         return obj;
@@ -38,7 +38,7 @@ struct CallContext {
 struct CallDetails {
 @safe:
     private {
-        GPRMutex mutex;
+        shared GPRMutex mutex;
         SharedResource _details;
     }
 
@@ -97,7 +97,7 @@ struct CallDetails {
     @disable this(this);
 }
 
-struct Tag {
+@nogc struct Tag {
 @safe:
     void* method;
     string methodName;
@@ -119,6 +119,7 @@ struct Tag {
     }
 
     ~this() {
+        assert(0);
     }
 
 

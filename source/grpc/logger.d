@@ -99,7 +99,7 @@ class Logger {
     shared static this() {
         gLogger = new Logger();
         import core.exception;
-        //core.exception.assertHandler = &assertHandler;
+        core.exception.assertHandler = &assertHandler;
     }
     
     shared static ~this() {

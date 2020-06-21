@@ -1,7 +1,7 @@
 module grpc.core.resource;
 
 
-struct SharedResource
+shared struct SharedResource
 {
 @safe:
     alias Exception function(shared(void)*) nothrow Release;

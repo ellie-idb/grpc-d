@@ -4,9 +4,9 @@ import interop.headers;
 import grpc.core.resource;
 import grpc.core.mutex;
 
-struct ByteBuffer {
+class ByteBuffer {
     private {
-        GPRMutex mutex;
+        shared GPRMutex mutex;
         SharedResource _buf;
         grpc_byte_buffer_reader reader;
         bool _readerInit;
@@ -26,8 +26,8 @@ struct ByteBuffer {
     }
 
     @property bool compressed() {
-        mutex.lock;
-        scope(exit) mutex.unlock;
+        lock;
+        scope(exit) unlock;
         
         assert(valid, "byte buffer was not valid");
         
@@ -35,8 +35,8 @@ struct ByteBuffer {
     }
 
     @property ulong length() {
-        mutex.lock;
-        scope(exit) mutex.unlock;
+        lock;
+        scope(exit) unlock;
         
         assert(valid, "byte buffer was not valid");
         
@@ -55,19 +55,19 @@ struct ByteBuffer {
 
     ubyte[] readAll() {
         import grpc.core.utils;
-        mutex.lock;
-        scope(exit) mutex.unlock;
+        lock;
+        scope(exit) unlock;
         
         assert(valid, "byte buffer was not valid");
-        ubyte[] dat = cast(ubyte[])byte_buffer_to_string(unsafeHandle);
+        ubyte[] dat = byte_buffer_to_type!(ubyte[])(unsafeHandle);
 
         return dat;
     }
 
     ubyte[] read() {
         ubyte[] ret;
-        mutex.lock;
-        scope(exit) mutex.unlock;
+        lock;
+        scope(exit) unlock;
         
         assert(valid, "byte buffer was not valid");
         
@@ -94,12 +94,12 @@ struct ByteBuffer {
 
 
     static ByteBuffer copy(ByteBuffer obj) {
-        obj.mutex.lock;
-        scope(exit) obj.mutex.unlock;
+        obj.lock;
+        scope(exit) obj.unlock;
+
         assert(obj.valid, "byte buffer was not valid");
-        
         auto buf_2 = grpc_byte_buffer_copy(obj.unsafeHandle);
-        ByteBuffer ret = ByteBuffer(buf_2);
+        ByteBuffer ret = new ByteBuffer(buf_2);
         return ret;
     }
     
@@ -112,8 +112,7 @@ struct ByteBuffer {
         assert(!valid, "byte buffer must be invalid now");
     }
 
-    static ByteBuffer opCall() @trusted {
-        ByteBuffer obj;
+    this() @trusted {
         static Exception release(shared(void)* ptr) @trusted nothrow {
             grpc_byte_buffer** v = cast(grpc_byte_buffer**)ptr;
             if (v != null) {
@@ -129,33 +128,27 @@ struct ByteBuffer {
         
         grpc_byte_buffer** buf = cast(grpc_byte_buffer**)gpr_zalloc((grpc_byte_buffer**).sizeof);
         if (buf != null) {
-            obj._buf = SharedResource(cast(shared)buf, &release);
-            obj.mutex = GPRMutex();
+            _buf = SharedResource(cast(shared)buf, &release);
+            mutex = GPRMutex();
         } else {
             throw new Exception("malloc failed");
-        } 
-        
-        return obj;
+        }
     }
 
-    static ByteBuffer opCall(ubyte[] _data) @trusted {
+    this(ubyte[] _data) @trusted {
         import grpc.core.utils;
         grpc_slice _dat = type_to_slice!(ubyte[])(_data);
         DEBUG!"sliced, creating new buf (%x)"(&_dat);
         grpc_byte_buffer* buf = grpc_raw_byte_buffer_create(&_dat, 1);
         grpc_slice_unref(_dat);
+        this(buf);
         DEBUG!"ok!";
-        
-        return ByteBuffer(buf);
-    }
-    
-    private static ByteBuffer opCall(grpc_byte_buffer* bb) @trusted {
-        ByteBuffer obj = ByteBuffer();
-        DEBUG!"setting unsafe handle";
-        *(obj.handle) = bb;
-        
-        return obj;
     }
 
-    @disable this(this);
+    
+    private this(grpc_byte_buffer* bb) @trusted {
+        DEBUG!"setting unsafe handle";
+        this();
+        *(handle) = bb;
+    }
 }

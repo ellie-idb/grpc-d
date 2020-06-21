@@ -5,29 +5,35 @@ import grpc.core.utils;
 import core.memory : GC;
 
 @safe:
-struct GPRMutex {
-    private {
-        SharedResource _mutex;
+class GPRMutex {
+    shared {
+        private {
+            SharedResource _mutex;
+        }
+
+        @property inout(gpr_mu)* handle() inout @trusted pure nothrow {
+            return cast(typeof(return)) _mutex.handle;
+        }
+
+        void lock() @trusted {
+            gpr_mu_lock(handle);
+        }
+
+        void unlock() @trusted {
+            gpr_mu_unlock(handle);
+        }
+
+        bool tryLock() @trusted {
+            return gpr_mu_trylock(handle) != 0;
+        }
     }
 
-    @property inout(gpr_mu)* handle() inout @trusted pure nothrow {
-        return cast(typeof(return)) _mutex.handle;
+    static shared(GPRMutex) opCall() @trusted {
+        GPRMutex o = new GPRMutex();
+        return cast(shared(GPRMutex))o;
     }
 
-    void lock() @trusted {
-        gpr_mu_lock(handle);
-    }
-
-    void unlock() @trusted {
-        gpr_mu_unlock(handle);
-    }
-
-    bool tryLock() @trusted {
-        return gpr_mu_trylock(handle) != 0;
-    }
-
-    static GPRMutex opCall() @trusted {
-        GPRMutex obj;
+    this() @trusted {
         gpr_mu* mutex;
         if ((mutex = cast(gpr_mu*)gpr_zalloc((gpr_mu).sizeof)) != null) {
             static Exception release(shared(void)* ptr) @trusted nothrow {
@@ -37,14 +43,10 @@ struct GPRMutex {
             }
 
             gpr_mu_init(mutex);
-            obj._mutex = SharedResource(cast(shared)mutex, &release);
+            _mutex = SharedResource(cast(shared)mutex, &release);
         } else {
             throw new Exception("failed to allocate memory");
         }
-
-        return obj;
     }
-
-    @disable this(this);
 
 }

@@ -10,9 +10,9 @@ import grpc.core.resource;
     INFO: This ARRAY SHOULD *NEVER* be shared across threads.
     It is not thread-safe.
 */
-struct MetadataArray {
+class MetadataArray {
     private {
-        GPRMutex mutex;
+        shared GPRMutex mutex;
         SharedResource _metadata;
     }
     
@@ -48,16 +48,14 @@ struct MetadataArray {
         return &handle.metadata[i1];
     }
 
-    static MetadataArray opCall() @trusted {
-        MetadataArray obj;
-        
+    this() {
         static Exception release(shared(void)* ptr) @trusted nothrow {
             import std.stdio;
-            try {
-                DEBUG!"metadata array is being freed!"();
-            } catch (Exception e) {
+            grpc_metadata_array* array = cast(grpc_metadata_array*)ptr;
+            for(int i = 0; i < array.count; i++) {
+                grpc_slice_unref(array.metadata[i].value);
             }
-            grpc_metadata_array_destroy(cast(grpc_metadata_array*)ptr);
+            grpc_metadata_array_destroy(array);
             gpr_free(cast(void*)ptr);
 
             return null;
@@ -65,14 +63,17 @@ struct MetadataArray {
         grpc_metadata_array* mt = cast(grpc_metadata_array*)gpr_zalloc((grpc_metadata_array).sizeof);
         if(mt != null) {
             grpc_metadata_array_init(mt);
-            obj._metadata = SharedResource(cast(shared)mt, &release);
-            obj.mutex = GPRMutex();
+            _metadata = SharedResource(cast(shared)mt, &release);
+            mutex = GPRMutex();
         } else {
             throw new Exception("malloc error");
         }
+    }
+
+
+    static MetadataArray opCall() @trusted {
+        MetadataArray obj = new MetadataArray();
         return obj;
     }
-    
-    @disable this(this);
 }
 

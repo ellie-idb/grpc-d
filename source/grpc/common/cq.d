@@ -19,12 +19,12 @@ import std.parallelism;
 
 import std.traits;
 
-struct CompletionQueue(string T) 
+class CompletionQueue(string T) 
     if(T == "Next") 
 {
 @safe:
     private { 
-        GPRMutex mutex;
+        shared GPRMutex mutex;
         SharedResource _cq;
     }
 
@@ -52,45 +52,46 @@ struct CompletionQueue(string T)
     }
 
     import grpc.server;
-    grpc_call_error requestCall(void* method, Tag* tag, Server* _server) @trusted {
+
+    grpc_call_error requestCall(void* method, Tag* tag, Server _server, CompletionQueue!"Next" boundToCall) @trusted {
+        assert(tag != null, "tag null");
         DEBUG!"hmm"();
+
+        DEBUG!"locking context mutex";
+        
+        _server.lock;
+        tag.ctx.mutex.lock;
+        mutex.lock;
+
+        scope(exit) {
+            _server.unlock;
+            tag.ctx.mutex.unlock;
+            mutex.unlock;
+        }
+
+        DEBUG!"1";
+        auto server_ptr = _server.handle();
+        DEBUG!"2";
+        auto method_cq = handle();
+
+        DEBUG!"3";
+        auto server_cq = boundToCall.handle();
+        
         auto ctx = &tag.ctx;
         assert(ctx != null, "context null");
-
-        DEBUG!"locking context mutex"();
-        ctx.mutex.lock;
-        mutex.lock;
-        scope(exit) {
-            ctx.mutex.unlock;
-            mutex.unlock;
-            DEBUG!"unlocked context mutex"();
-        }
-        
-        auto server_ptr = _server.handle();
-        _server.lock;
-        scope(exit) _server.unlock;
-        DEBUG!"Got server lock"();
-
-        auto global_cq = _server.masterQueue.ptr(); 
-        DEBUG!"Got global cq lock"();
-
-        auto method_cq = handle();
-        DEBUG!"Locked self"();
-
+        DEBUG!"4";
         auto details = ctx.details.handle();
-        DEBUG!"Got CallDetails"();
-
+        
+        DEBUG!"5";
         auto metadata = ctx.metadata.handle();
-        DEBUG!"Got metadata lock"();
-
+        DEBUG!"6";
         auto data = ctx.data.handle();
-        DEBUG!"Locked byte buffer"();
 
         DEBUG!"call: %x"(ctx.call);
 
         grpc_call_error error = grpc_server_request_registered_call(server_ptr,
                 method, ctx.call, &details.deadline, metadata,
-                data, method_cq, global_cq, tag);
+                data, method_cq, server_cq, tag);
 
         DEBUG!"successfully reregistered"();
 
@@ -99,9 +100,7 @@ struct CompletionQueue(string T)
     }
 
 
-    static CompletionQueue!T opCall() @trusted {
-        CompletionQueue!T obj;
-
+    this() @trusted {
         grpc_completion_queue* cq = null;
 
         static if (T == "Next") {
@@ -120,13 +119,15 @@ struct CompletionQueue(string T)
             return null;
         }
 
-        obj._cq = SharedResource(cast(shared)cq, &release);
-        obj.mutex = GPRMutex();
-
-        return obj;
+        _cq = SharedResource(cast(shared)cq, &release);
+        mutex = GPRMutex();
     }
 
-    @disable this(this);
+
+    static CompletionQueue!T opCall() @trusted {
+        CompletionQueue!T obj = new CompletionQueue!T();
+        return obj;
+    }
 
     void shutdown() @trusted {
         mutex.lock;
