@@ -111,9 +111,20 @@ class ByteBuffer {
         *(handle) = null;
         assert(!valid, "byte buffer must be invalid now");
     }
+    
+    static ByteBuffer opCall(ref ubyte[] data) @trusted {
+        ByteBuffer obj = theAllocator.make!ByteBuffer(data);
+        return obj;
+    }
+    
+    static ByteBuffer opCall() @trusted {
+        ByteBuffer obj = theAllocator.make!ByteBuffer();
+        return obj;
+    }
 
     this() @trusted {
         static Exception release(shared(void)* ptr) @trusted nothrow {
+            debug import std.stdio;
             grpc_byte_buffer** v = cast(grpc_byte_buffer**)ptr;
             if (v != null) {
                 if (*v != null) {
@@ -135,13 +146,13 @@ class ByteBuffer {
         }
     }
 
-    this(ubyte[] _data) @trusted {
+    this(ref ubyte[] _data) @trusted {
         import grpc.core.utils;
         grpc_slice _dat = type_to_slice!(ubyte[])(_data);
         DEBUG!"sliced, creating new buf (%x)"(&_dat);
         grpc_byte_buffer* buf = grpc_raw_byte_buffer_create(&_dat, 1);
-        grpc_slice_unref(_dat);
         this(buf);
+        grpc_slice_unref(_dat);
         DEBUG!"ok!";
     }
 
@@ -150,5 +161,12 @@ class ByteBuffer {
         DEBUG!"setting unsafe handle";
         this();
         *(handle) = bb;
+    }
+    
+    ~this() {
+        theAllocator.dispose(mutex);
+        _buf.forceRelease();
+        destroy(_buf);
+        destroy(reader);
     }
 }

@@ -1,11 +1,14 @@
 {
 	"fileVersion": 1,
 	"versions": {
-		"automem": "0.3.5",
+		"automem": "0.6.2",
 		"grpc-d-interop": "~master",
-		"protobuf": "0.6.0",
+		"memutils": "1.0.4",
+		"mir-algorithm": "3.9.0",
+		"mir-core": "1.1.7",
+		"protobuf": "0.6.2",
 		"stdx-allocator": "2.77.5",
-		"test_allocator": "0.2.5",
-		"unit-threaded": "0.7.55",
+		"test_allocator": "0.3.2",
+		"unit-threaded": "1.0.4"
 	}
 }

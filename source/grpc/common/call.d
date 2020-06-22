@@ -22,7 +22,7 @@ struct CallContext {
         obj.mutex = GPRMutex();
         obj.details = CallDetails();
         obj.metadata = MetadataArray();
-        obj.data = new ByteBuffer();
+        obj.data = ByteBuffer();
         obj.call = cast(grpc_call**)gpr_zalloc((grpc_call**).sizeof); 
 
         return obj;
@@ -30,6 +30,11 @@ struct CallContext {
 
     ~this() @trusted {
         gpr_free(cast(void*)call);
+        destroy(details);
+        destroy(metadata);
+        destroy(data);
+        theAllocator.dispose(data);
+        theAllocator.dispose(mutex);
     }
 
     @disable this(this);
@@ -93,9 +98,17 @@ struct CallDetails {
         return obj;
     }
 
+    ~this() @trusted {
+        theAllocator.dispose(mutex);
+        destroy(_details);
+    }
 
     @disable this(this);
 }
+
+// since we handle the memory for the CQ tags manually (and since there should only ever be very few tags)
+// which actually exist, this should be never cleaned up by the garbage collector as it contains VERY important
+// things
 
 @nogc struct Tag {
 @safe:
@@ -119,7 +132,7 @@ struct CallDetails {
     }
 
     ~this() {
-        assert(0);
+        assert(0); // the tag should NEVER have it's destructor called, you MUST call free on it
     }
 
 

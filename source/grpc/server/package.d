@@ -64,7 +64,12 @@ class Server
         }
 
         while (atomicLoad(_run)) {
-            Thread.sleep(1.msecs);
+            foreach(service; services) {
+                if (service.runners == 0) {
+                    ERROR!"service is DEAD!";
+                }
+            }
+            Thread.sleep(1.seconds);
         }
 
         foreach(service; services) {

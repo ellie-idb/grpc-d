@@ -7,20 +7,21 @@ import grpc.common.cq;
 import grpc.common.batchcall;
 import grpc.common.call;
 import core.atomic;
+import automem;
+import stdx.allocator : theAllocator, make, dispose;
 
 class ServerWriter(T) {
     private {
         BatchCall _op;
         CompletionQueue!"Next" _cq;
-        shared(bool) _started;
+        bool started = false;
     }
 
     bool start(Tag* tag) {
-        _op.reset;
-        _op.addOp(new SendInitialMetadataOp()); 
+        _op.addOp(SendInitialMetadataOp()); 
         _op.run(_cq, tag);
 
-        atomicStore(_started, true);
+        started = true;
 
         return true;
     }
@@ -29,42 +30,41 @@ class ServerWriter(T) {
         import std.array;
         import google.protobuf;
         
-        if(!atomicLoad(_started)) {
+        if(!started) {
+            return false;
+        }
+        
+        ubyte[] _out = obj.toProtobuf.array;
+        _op.addOp(SendMessageOp(_out));
+        DEBUG!"running";
+        _op.run(_cq, tag);
+        
+        return true;
+    }
+
+    bool finish(Tag* tag, ref Status _stat) {
+        if(!started) {
             return false;
         }
 
-        _op.reset;
-        ubyte[] _out = obj.toProtobuf.array;
-        _op.addOp(new SendMessageOp(_out));
-        DEBUG!"running";
+        DEBUG!"reset, running";
+        _op.addOp(SendStatusFromServerOp(cast(grpc_status_code)_stat.code, _stat.message));
         _op.run(_cq, tag);
 
         return true;
     }
 
-    bool finish(Tag* tag, Status _stat) {
-        if(!atomicLoad(_started)) {
-            return false;
-        }
-
-        bool ok = false;
-
-        BatchCall op = new BatchCall();
-        DEBUG!"reset, running";
-        op.addOp(new SendStatusFromServerOp(cast(grpc_status_code)_stat.code, _stat.message));
-        op.run(_cq, tag);
-
-        return true;
-    }
-
     this(CompletionQueue!"Next" cq) {
-        _op = new BatchCall();
+        _op = BatchCall();
         _cq = cq;
     }
 
     ~this() {
+        theAllocator.dispose(_op);
     }
-
-
-
+    
+    static ServerWriter!T opCall(CompletionQueue!"Next" cq) {
+        ServerWriter!T obj = theAllocator.make!(ServerWriter!T)(cq);
+        return obj;
+    }
 }

@@ -3,10 +3,10 @@ description "gRPC for DLang"
 authors "Harrison Ford"
 copyright "Copyright © 2019, Harrison Ford"
 license "proprietary"
-dependency "automem" version="~>0.6.2"
-dependency "grpc-d-interop" version="~master"
 dependency "protobuf" version="~>0.6.0"
-
+dependency "automem" version="~>0.6.2"
+dependency "stdx-allocator" version="~>3.0.2"
+dependency "grpc-d-interop" version="~master"
 libs "grpc" "grpcpp_channelz"
 configuration "library" {
 	targetType "library"

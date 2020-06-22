@@ -7,6 +7,7 @@ import grpc.core;
 import grpc.core.mutex;
 import grpc.core.resource;
 import grpc.core.utils;
+import stdx.allocator : theAllocator, make, dispose;
 
 //queue ok/ok type
 alias NextStatus = Tuple!(bool, bool);
@@ -43,9 +44,7 @@ class CompletionQueue(string T)
     static if(T == "Next") {
         grpc_event next(Duration time) @trusted {
             gpr_timespec t = durtotimespec(time);
-            grpc_event _evt;
-
-            _evt = grpc_completion_queue_next(handle, t, null);
+            grpc_event _evt = grpc_completion_queue_next(handle, t, null);
 
             return _evt;
         }
@@ -125,7 +124,7 @@ class CompletionQueue(string T)
 
 
     static CompletionQueue!T opCall() @trusted {
-        CompletionQueue!T obj = new CompletionQueue!T();
+        CompletionQueue!T obj = theAllocator.make!(CompletionQueue!T)();
         return obj;
     }
 

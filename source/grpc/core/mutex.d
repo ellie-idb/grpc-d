@@ -3,8 +3,8 @@ import interop.headers;
 import grpc.core.resource;
 import grpc.core.utils;
 import core.memory : GC;
+import stdx.allocator : theAllocator, make, dispose;
 
-@safe:
 class GPRMutex {
     shared {
         private {
@@ -29,11 +29,11 @@ class GPRMutex {
     }
 
     static shared(GPRMutex) opCall() @trusted {
-        GPRMutex o = new GPRMutex();
+        GPRMutex o = theAllocator.make!GPRMutex();
         return cast(shared(GPRMutex))o;
     }
 
-    this() @trusted {
+    this() {
         gpr_mu* mutex;
         if ((mutex = cast(gpr_mu*)gpr_zalloc((gpr_mu).sizeof)) != null) {
             static Exception release(shared(void)* ptr) @trusted nothrow {
@@ -47,6 +47,11 @@ class GPRMutex {
         } else {
             throw new Exception("failed to allocate memory");
         }
+    }
+    
+    ~this() {
+        _mutex.forceRelease();
+        destroy(_mutex);
     }
 
 }

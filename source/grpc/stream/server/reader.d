@@ -6,6 +6,8 @@ import grpc.common.cq;
 import grpc.common.call;
 import grpc.core.utils;
 import grpc.common.batchcall;
+import automem;
+import stdx.allocator : theAllocator, make, dispose;
 
 class ServerReader(T) {
     private {
@@ -25,6 +27,7 @@ class ServerReader(T) {
         if(len != 0) {
             ubyte[] data = _tag.ctx.data.readAll();
             protobuf = data.fromProtobuf!T();
+            destroy(data);
         }
         return protobuf;
     }
@@ -95,20 +98,25 @@ class ServerReader(T) {
     }
 
     void finish(Tag* tag) {
-        batch.reset;
-        batch.addOp(new RecvCloseOnServerOp());
+        DEBUG!"finishing";
+        batch.addOp(RecvCloseOnServerOp());
         DEBUG!"running!"();
         auto stat = batch.run(_cq, tag);
     }
 
     this(CompletionQueue!"Next" cq) {
-        batch = new BatchCall();
         import std.stdio;
         _cq = cq;
+        batch = BatchCall();
     }
 
     ~this() {
-
-
+        theAllocator.dispose(batch);
     }
+    
+    static ServerReader!T opCall(CompletionQueue!"Next" cq) @trusted {
+        ServerReader!T obj = theAllocator.make!(ServerReader!T)(cq);
+        return obj;
+    }
+    
 }

@@ -5,6 +5,8 @@ import grpc.common.cq;
 import grpc.core.utils;
 import grpc.core.mutex;
 import grpc.core.resource;
+import automem;
+import stdx.allocator : theAllocator, make, dispose;
 
 /*
     INFO: This ARRAY SHOULD *NEVER* be shared across threads.
@@ -20,19 +22,28 @@ class MetadataArray {
         return cast(typeof(return)) _metadata.handle;
     }
     
-    @property inout(grpc_metadata)* data() inout @trusted pure nothrow {
+    @property inout(grpc_metadata)* data() inout @trusted pure nothrow in {
+        assert(handle !is null, "handle shouldn't be null");
+    } do {
         return cast(typeof(return)) handle.metadata;
     }
 
     @property ulong capacity() {
         mutex.lock;
         scope(exit) mutex.unlock;
+        if (handle == null) {
+            return 0;
+        }
         return handle.capacity;
     }
 
     @property ulong count() {
         mutex.lock;
         scope(exit) mutex.unlock;
+        if (handle == null) { 
+            return 0;
+        }
+        
         return handle.count;
     }
 
@@ -51,9 +62,14 @@ class MetadataArray {
     this() {
         static Exception release(shared(void)* ptr) @trusted nothrow {
             import std.stdio;
+
             grpc_metadata_array* array = cast(grpc_metadata_array*)ptr;
-            for(int i = 0; i < array.count; i++) {
-                grpc_slice_unref(array.metadata[i].value);
+            if (array.metadata) {
+                for(int i = 0; i < array.count; i++) {
+                    grpc_slice_unref(array.metadata[i].key);
+                    grpc_slice_unref(array.metadata[i].value);
+                }
+                gpr_free(cast(void*)array.metadata);
             }
             grpc_metadata_array_destroy(array);
             gpr_free(cast(void*)ptr);
@@ -69,10 +85,17 @@ class MetadataArray {
             throw new Exception("malloc error");
         }
     }
-
+    
+    ~this() {
+        debug import std.stdio;
+        
+        _metadata.forceRelease();
+        destroy(_metadata);
+        theAllocator.dispose(mutex);
+    }
 
     static MetadataArray opCall() @trusted {
-        MetadataArray obj = new MetadataArray();
+        MetadataArray obj = theAllocator.make!MetadataArray();
         return obj;
     }
 }

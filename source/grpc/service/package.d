@@ -8,9 +8,8 @@ import grpc.common.call;
 import google.rpc.status;
 import grpc.core.tag;
 import grpc.common.cq;
-import grpc.service.queue;
-import std.parallelism;
 import grpc.core.utils;
+import stdx.allocator : theAllocator, make, dispose;
 
 //should/can be overridden by clients
 interface ServiceHandlerInterface {
@@ -47,6 +46,10 @@ class Service(T) : ServiceHandlerInterface {
     alias ServiceHandlerType = void function(CompletionQueue!"Next", T, Tag*);
     class ServicerThread : Thread {
         this() {
+            import std.experimental.allocator.mallocator: Mallocator;
+            import stdx.allocator : theAllocator, allocatorObject;
+            
+            theAllocator = allocatorObject(Mallocator.instance);
             super(&run);
         }
         
@@ -73,6 +76,7 @@ class Service(T) : ServiceHandlerInterface {
         void run() {
             /* First, request all calls (this will be done when the Server requests us to initialize) */
             /* As well, create a thread-local completion queue */
+            
             _serviceInstance = new T();
             notificationCq = CompletionQueue!"Next"();
             callCq = CompletionQueue!"Next"();
@@ -88,6 +92,7 @@ class Service(T) : ServiceHandlerInterface {
                 Thread.sleep(1.msecs);
             }
 
+            
             // DUPLICATE every tag into a thread-local tag cache, and mark it such
             Tag*[] tlsTags;
             foreach (_tag; tags) {
@@ -95,7 +100,10 @@ class Service(T) : ServiceHandlerInterface {
                 DEBUG!"duplicating tags for method (%x)"(tag);
                 tag.method = _tag.method;
                 tag.methodName = _tag.methodName.dup;
-                tag.metadata = _tag.metadata.dup;
+                tag.metadata = _tag.metadata.dup;            import std.experimental.allocator.mallocator: Mallocator;
+            import stdx.allocator : theAllocator, allocatorObject;
+            
+            theAllocator = allocatorObject(Mallocator.instance);
                 // TODO: fix metadata array so we can have more then sizeof(ubyte) workers!
                 // this is an arbitrary limitation that i eventually want to fix- either by
                 // adding an associated worker index, or something along those lines
@@ -111,7 +119,7 @@ class Service(T) : ServiceHandlerInterface {
             INFO!"OK!";
             _run = true;
             while (_run) {
-                auto item = notificationCq.next(10.msecs);
+                auto item = notificationCq.next(10.seconds);
                 if (item.type == GRPC_OP_COMPLETE) {
                     DEBUG!"hello from task %d"(workerIndex);
                     DEBUG!"hit something";
@@ -120,6 +128,7 @@ class Service(T) : ServiceHandlerInterface {
                     _run = false;
                     continue;
                 } else if(item.type == GRPC_QUEUE_TIMEOUT) {
+                    DEBUG!"timeout";
                     continue;
                 }
 
@@ -155,7 +164,7 @@ class Service(T) : ServiceHandlerInterface {
 
                     BatchCall call = new BatchCall();
                     call.addOp(new RecvCloseOnServerOp());
-                    call.addOp(new SendInitialMetadataOp());
+                    call.addOp(SendInitialMetadataOp());
                     call.addOp(new SendStatusFromServerOp(GRPC_STATUS_INTERNAL, e.msg));
                     call.run(callCq, tag);
                 }
@@ -290,11 +299,11 @@ class Service(T) : ServiceHandlerInterface {
                             scope(exit) _tag.ctx.mutex.unlock;
                             
                             DEBUG!"locked!";
-                            ServerReader!(input) reader = new ServerReader!(input)(queue);
-                            ServerWriter!(output) writer = new ServerWriter!(output)(queue);
+                            ServerReader!(input) reader = ServerReader!(input)(queue);
+                            ServerWriter!(output) writer = ServerWriter!(output)(queue);
 
                             /* results from our call */
-                            Status stat;
+                            Status stat = Status();
                             input funcIn;
                             output funcOut;
                             DEBUG!"func call: %s"(remoteName);
@@ -340,7 +349,18 @@ class Service(T) : ServiceHandlerInterface {
                                 As we are now done with the call,
                                 we have to unref it, so that the call is freed,
                                 as well as any memory allocated in the call arena.
+                                
+                                As well, to avoid collections as best as we can, we
+                                explicitly destroy the reader/writer here, to free up
+                                used memory.
                             */
+                            
+                            // As well, free the byte buffer's memory
+                            //DEBUG!"metadata: cap %d count %d"(_tag.ctx.metadata.capacity, _tag.ctx.metadata.count);
+                            
+                            if (_tag.ctx.data.valid) {
+                                _tag.ctx.data.cleanup;
+                            }
                             grpc_call_unref(*_tag.ctx.call);
                             *_tag.ctx.call = null;
                     };

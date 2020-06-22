@@ -1,16 +1,19 @@
 module grpc.common.batchcall;
 import std.exception;
 import interop.headers;
-import std.array;
+import automem;
 import grpc.common.call;
 import grpc.core.utils;
 import grpc.common.metadata;
 import grpc.common.byte_buffer;
 import grpc.logger;
+import std.exception : enforce;
+import stdx.allocator : theAllocator, make, dispose;
 
 interface RemoteOp {
     grpc_op_type type();
     grpc_op value();
+    void free();
 }
 
 class SendInitialMetadataOp : RemoteOp {
@@ -31,12 +34,22 @@ class SendInitialMetadataOp : RemoteOp {
 
         return ret;
     }
+    
+    void free() {
+        theAllocator.dispose(array);
+    }
 
     this() {
         array = MetadataArray();
     }
     
+    static SendInitialMetadataOp opCall() @trusted {
+        SendInitialMetadataOp obj = theAllocator.make!SendInitialMetadataOp();
+        return obj;
+    }
+    
     ~this() {
+        free;
     }
 }
 
@@ -51,17 +64,27 @@ class SendMessageOp : RemoteOp {
 
     grpc_op value() {
         grpc_op ret;
-        assert(_buf.valid, "expected byte buffer to be valid");
+        enforce(_buf.valid, "expected byte buffer to be valid");
         ret.op = type();
         ret.data.send_message.send_message = _buf.unsafeHandle;
         return ret;
     }
 
-    this(ubyte[] message) {
-        _buf = new ByteBuffer(message);
+    this(ref ubyte[] message) {
+        _buf = theAllocator.make!ByteBuffer(message);
+    }
+    
+    void free() {
+        theAllocator.dispose(_buf);
+    }
+    
+    static SendMessageOp opCall(ref ubyte[] message) @trusted {
+        SendMessageOp obj = theAllocator.make!SendMessageOp(message);
+        return obj;
     }
 
-    ~this() {
+    ~this() @trusted {
+        free;
     }
 }
 
@@ -82,19 +105,35 @@ class SendStatusFromServerOp : RemoteOp {
         ret.data.send_status_from_server.status_details = &_details;
         ret.data.send_status_from_server.status = _status;
         ret.data.send_status_from_server.trailing_metadata_count =  _trailing_metadata.count;
-        ret.data.send_status_from_server.trailing_metadata = _trailing_metadata.data;
+        if (_trailing_metadata.count != 0) {
+            ret.data.send_status_from_server.trailing_metadata = _trailing_metadata.data;
+        }
 
         return ret;
     }
-
+    
+    void free() {
+        grpc_slice_unref(_details);
+        
+        if (_trailing_metadata !is null) {
+            theAllocator.dispose(_trailing_metadata);
+            _trailing_metadata = null;
+        }
+    }
+        
     this(grpc_status_code code, string details) {
         _trailing_metadata = MetadataArray();
-        _details = string_to_slice(details);
+        _details = string_to_slice(details.dup);
         _status = code;
+    }
+    
+    static SendStatusFromServerOp opCall(grpc_status_code code, string details) @trusted {
+        SendStatusFromServerOp obj = theAllocator.make!SendStatusFromServerOp(code, details);
+        return obj;
     }
 
     ~this() {
-        grpc_slice_unref(_details);
+        free;
     }
 }
 
@@ -115,11 +154,21 @@ class RecvInitialMetadataOp : RemoteOp {
         return ret;
     }
 
+    void free() {
+        theAllocator.dispose(_metadata);
+    }
+    
     this() {
         _metadata = MetadataArray();
     }
     
+    static RecvInitialMetadataOp opCall() @trusted {
+        RecvInitialMetadataOp obj = theAllocator.make!RecvInitialMetadataOp();
+        return obj;
+    }
+    
     ~this() {
+        free;
     }
 
 }
@@ -140,9 +189,16 @@ class RecvMessageOp : RemoteOp {
         return ret;
     }
     
-
+    void free() {
+    }
+    
     this(ref ByteBuffer buf) {
         _buf = &buf;
+    }
+    
+    static RecvMessageOp opCall(ref ByteBuffer buf) @trusted {
+        RecvMessageOp obj = theAllocator.make!RecvMessageOp(buf);
+        return obj;
     }
 }
 
@@ -181,14 +237,25 @@ class RecvCloseOnServerOp : RemoteOp {
         return ret;
     }
 
+    void free() {
+    }
+    
     this() {
+    }
+    
+    ~this() {
+        free;
+    }
+    
+    static RecvCloseOnServerOp opCall() @trusted {
+        RecvCloseOnServerOp obj = theAllocator.make!RecvCloseOnServerOp();
+        return obj;
     }
 }
 
 class BatchCall {
     private {
-        Appender!(RemoteOp[]) ops;
-
+        RemoteOp[] ops;
         bool sanityCheck() {
             int[int] count;
             foreach(op; ops) {
@@ -202,7 +269,7 @@ class BatchCall {
     }
 
     void addOp(RemoteOp _op) {
-        ops.put(_op);
+        ops ~= _op;
     }
     
     import grpc.core.tag;
@@ -210,10 +277,14 @@ class BatchCall {
     import grpc.common.cq;
 
     /* requires the caller to have a lock on the CallContext */
-    grpc_call_error run(CompletionQueue!"Next" cq, Tag* _tag, Duration d = 1.msecs) {
+    // For tuning, you may assume that changing the duration MAY be optimal, however
+    // if you reduce the duration down to 1 millisecond, if there is ever a collection cycle,
+    // the library can't adequately catch the event (and may result in odd cancellations)
+    
+    grpc_call_error run(CompletionQueue!"Next" cq, Tag* _tag, Duration d = 1.seconds) { 
         assert(sanityCheck(), "failed sanity check");
         assert(_tag != null, "tag should never be null");
-        grpc_op[] _ops;
+        Vector!(grpc_op) _ops;
 
         foreach(op; ops) {
             _ops ~= op.value();
@@ -228,23 +299,43 @@ class BatchCall {
         } else {
             ERROR!"STATUS: %s"(status);
         }
+        
+        _ops.free;
+        reset;
 
         return status;
-
     }
     
     void reset() {
-        foreach(op; ops) {
-            destroy(op);
+        for(int i = 0; i < ops.length; i++) {
+            RemoteOp op = ops[i];
+            Object obj = cast(Object)op;
+            static foreach(sym; __traits(allMembers, mixin(__MODULE__))) {
+                static if(sym[$ - 2 .. $] == "Op" && sym != "RemoteOp") {{
+                    mixin("alias T = " ~ sym ~ ";");
+                    if (obj !is null && typeid(obj) == typeid(T)) {
+                        T realObj = cast(T)obj;
+                        INFO!"Freeing %s"(sym);
+                        goto end;
+                    }
+                }}
+            }
+end:
+            theAllocator.dispose(op);
         }
-        ops.clear;
+        
+        ops.length = 0;
     }
 
     this() {
-        ops = appender!(RemoteOp[]);
-        ops.reserve(5);
+    }
+    
+    static BatchCall opCall() @trusted {
+        BatchCall obj = theAllocator.make!BatchCall();
+        return obj;
     }
 
     ~this() {
+        reset;
     }
 }
