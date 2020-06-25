@@ -11,10 +11,10 @@ enum Verbosity {
 };
 
 import std.array, std.format;
-static __gshared Logger gLogger;
+static shared Logger gLogger;
 
 void INFO(string format, string file = __MODULE__, int line = __LINE__, A...)(lazy A args) @trusted {
-    if (gLogger.minVerbosity <= Verbosity.Info) {
+    if (gLogger.__minVerbosity <= Verbosity.Info) {
         auto msg = appender!string;
         formattedWrite(msg, format, args);
         gLogger.log(Verbosity.Info, msg.data, file, line);
@@ -22,7 +22,7 @@ void INFO(string format, string file = __MODULE__, int line = __LINE__, A...)(la
 }
 
 void DEBUG(string format, string file = __MODULE__, int line = __LINE__, A...)(lazy A args) @trusted {
-    if (gLogger.minVerbosity <= Verbosity.Debug) {
+    if (gLogger.__minVerbosity <= Verbosity.Debug) {
         auto msg = appender!string;
         formattedWrite(msg, format, args);
         gLogger.log(Verbosity.Debug, msg.data, file, line);
@@ -30,7 +30,7 @@ void DEBUG(string format, string file = __MODULE__, int line = __LINE__, A...)(l
 }
 
 void ERROR(string format, string file = __MODULE__, int line = __LINE__, A...)(lazy A args) @trusted {
-    if (gLogger.minVerbosity <= Verbosity.Error) {
+    if (gLogger.__minVerbosity <= Verbosity.Error) {
         auto msg = appender!string;
         formattedWrite(msg, format, args);
         gLogger.log(Verbosity.Error, msg.data, file, line);
@@ -55,11 +55,11 @@ class Logger {
 
     }
 
-    @property Verbosity minVerbosity() {
+    @property Verbosity minVerbosity() shared {
         return __minVerbosity;
     }
 
-    @property Verbosity minVerbosity(Verbosity _min) {
+    @property Verbosity minVerbosity(Verbosity _min) shared {
         gpr_log_verbosity_init();
         gpr_set_log_verbosity(cast(gpr_log_severity)_min);
         __minVerbosity = _min;
@@ -69,26 +69,26 @@ class Logger {
 
 
     
-    void info(string message, string file = __MODULE__, int line = __LINE__) {
+    void info(string message, string file = __MODULE__, int line = __LINE__) shared {
         log(Verbosity.Info, message, file, line);
     }
 
-    void debug_(string message, string file = __MODULE__, int line = __LINE__) {
+    void debug_(string message, string file = __MODULE__, int line = __LINE__)  shared{
         log(Verbosity.Debug, message, file, line);
     }
 
-    void error(string message, string file = __MODULE__, int line = __LINE__) {
+    void error(string message, string file = __MODULE__, int line = __LINE__) shared {
         log(Verbosity.Error, message, file, line);
     }
 
-    void log(Verbosity v, string message, string file = __MODULE__, int line = __LINE__) {
+    void log(Verbosity v, string message, string file = __MODULE__, int line = __LINE__) shared {
         import std.string : toStringz;
         const(char)* msg = message.toStringz;
         const(char)* f = file.toStringz;
         gpr_log_message(f, line, cast(gpr_log_severity)v, msg); 
     }
 
-    this(Verbosity _minVerbosity = Verbosity.Info, string info = "", string warning = "", string error = "", string debug_ = "") {
+    this(Verbosity _minVerbosity = Verbosity.Info, string info = "", string warning = "", string error = "", string debug_ = "") shared {
         minVerbosity = _minVerbosity;
         _infoPath = info;
         _warningPath = warning;
@@ -97,7 +97,7 @@ class Logger {
     }
 
     shared static this() {
-        gLogger = new Logger();
+        gLogger = new shared(Logger)();
         import core.exception;
         core.exception.assertHandler = &assertHandler;
     }

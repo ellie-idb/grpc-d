@@ -9,7 +9,7 @@ import google.rpc.status;
 import grpc.core.tag;
 import grpc.common.cq;
 import grpc.core.utils;
-import stdx.allocator : theAllocator, make, dispose;
+import std.experimental.allocator : theAllocator, make, dispose;
 
 //should/can be overridden by clients
 interface ServiceHandlerInterface {
@@ -47,7 +47,7 @@ class Service(T) : ServiceHandlerInterface {
     class ServicerThread : Thread {
         this() {
             import std.experimental.allocator.mallocator: Mallocator;
-            import stdx.allocator : theAllocator, allocatorObject;
+            import std.experimental.allocator : theAllocator, allocatorObject;
             
             theAllocator = allocatorObject(Mallocator.instance);
             super(&run);
@@ -76,6 +76,8 @@ class Service(T) : ServiceHandlerInterface {
         void run() {
             /* First, request all calls (this will be done when the Server requests us to initialize) */
             /* As well, create a thread-local completion queue */
+            import core.memory : GC;
+            GC.disable;
             
             _serviceInstance = new T();
             notificationCq = CompletionQueue!"Next"();
@@ -100,10 +102,7 @@ class Service(T) : ServiceHandlerInterface {
                 DEBUG!"duplicating tags for method (%x)"(tag);
                 tag.method = _tag.method;
                 tag.methodName = _tag.methodName.dup;
-                tag.metadata = _tag.metadata.dup;            import std.experimental.allocator.mallocator: Mallocator;
-            import stdx.allocator : theAllocator, allocatorObject;
-            
-            theAllocator = allocatorObject(Mallocator.instance);
+                tag.metadata = _tag.metadata.dup;            
                 // TODO: fix metadata array so we can have more then sizeof(ubyte) workers!
                 // this is an arbitrary limitation that i eventually want to fix- either by
                 // adding an associated worker index, or something along those lines
@@ -115,8 +114,7 @@ class Service(T) : ServiceHandlerInterface {
                 
                 callCq.requestCall(tag.method, tag, _server, notificationCq); 
             }
-
-            INFO!"OK!";
+            
             _run = true;
             while (_run) {
                 auto item = notificationCq.next(10.seconds);
@@ -129,6 +127,7 @@ class Service(T) : ServiceHandlerInterface {
                     continue;
                 } else if(item.type == GRPC_QUEUE_TIMEOUT) {
                     DEBUG!"timeout";
+                    GC.collect;
                     continue;
                 }
 
@@ -163,9 +162,9 @@ class Service(T) : ServiceHandlerInterface {
                     ERROR!"CAUGHT EXCEPTION: %s"(e.msg);
 
                     BatchCall call = new BatchCall();
-                    call.addOp(new RecvCloseOnServerOp());
-                    call.addOp(SendInitialMetadataOp());
-                    call.addOp(new SendStatusFromServerOp(GRPC_STATUS_INTERNAL, e.msg));
+                    call.addOp(theAllocator.make!RecvCloseOnServerOp());
+                    call.addOp(theAllocator.make!SendInitialMetadataOp());
+                    call.addOp(theAllocator.make!SendStatusFromServerOp(GRPC_STATUS_INTERNAL, e.msg));
                     call.run(callCq, tag);
                 }
 
@@ -173,7 +172,6 @@ class Service(T) : ServiceHandlerInterface {
                 if (error != GRPC_CALL_OK) {
                     ERROR!"could not request call %s"(error);
                 }
-
             }
         }
     }
@@ -299,13 +297,13 @@ class Service(T) : ServiceHandlerInterface {
                             scope(exit) _tag.ctx.mutex.unlock;
                             
                             DEBUG!"locked!";
-                            ServerReader!(input) reader = ServerReader!(input)(queue);
-                            ServerWriter!(output) writer = ServerWriter!(output)(queue);
+                            ServerReader!(input) reader = theAllocator.make!(ServerReader!(input))(queue);
+                            ServerWriter!(output) writer = theAllocator.make!(ServerWriter!(output))(queue);
 
                             /* results from our call */
-                            Status stat = Status();
-                            input funcIn;
-                            output funcOut;
+                            Status stat = Status.init;
+                            input funcIn = input.init;
+                            output funcOut = output.init;
                             DEBUG!"func call: %s"(remoteName);
                             static if(hasUDA!(val, ClientStreaming) == 0 && hasUDA!(val, ServerStreaming) == 0) {
                                 DEBUG!"func call: regular";
@@ -320,6 +318,8 @@ class Service(T) : ServiceHandlerInterface {
                                 DEBUG!"writing";
                                 writer.write(_tag, funcOut);
                                 DEBUG!"done write";
+                                
+                                writer.finish(_tag, stat);
                             }
                             else static if(hasUDA!(val, ClientStreaming) && hasUDA!(val, ServerStreaming)) {
                                 DEBUG("func call: bidi");
@@ -341,7 +341,6 @@ class Service(T) : ServiceHandlerInterface {
                             }
 
                             DEBUG!"func call: writing with status %s"(stat);
-                            writer.finish(_tag, stat);
                             DEBUG!"func call: done";
 
                            /*
@@ -354,7 +353,6 @@ class Service(T) : ServiceHandlerInterface {
                                 explicitly destroy the reader/writer here, to free up
                                 used memory.
                             */
-                            
                             // As well, free the byte buffer's memory
                             //DEBUG!"metadata: cap %d count %d"(_tag.ctx.metadata.capacity, _tag.ctx.metadata.count);
                             
@@ -363,6 +361,9 @@ class Service(T) : ServiceHandlerInterface {
                             }
                             grpc_call_unref(*_tag.ctx.call);
                             *_tag.ctx.call = null;
+                            
+                            theAllocator.dispose(reader);
+                            theAllocator.dispose(writer);
                     };
 
                     static if(hasUDA!(val, ClientStreaming) && hasUDA!(val, ServerStreaming)) {
@@ -419,7 +420,7 @@ class Service(T) : ServiceHandlerInterface {
         _serviceId = serviceId;
         threads = new ThreadGroup();
 
-        workingThreads = 8;
+        workingThreads = 1;
 
         with(funcType) { 
             _funcCount[NORMAL] = 0;

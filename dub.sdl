@@ -5,10 +5,15 @@ copyright "Copyright © 2019, Harrison Ford"
 license "proprietary"
 dependency "protobuf" version="~>0.6.0"
 dependency "automem" version="~>0.6.2"
-dependency "stdx-allocator" version="~>3.0.2"
 dependency "grpc-d-interop" version="~master"
 libs "grpc" "grpcpp_channelz"
 configuration "library" {
 	targetType "library"
 	dflags "-dip25" "-dip1000" "-dip1008"
+}
+
+configuration "asan" {
+	targetType "library"
+	dflags "-dip25" "-dip1000"
+	dflags "-fsanitize=address" platform="ldc"
 }

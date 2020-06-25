@@ -1,5 +1,6 @@
 module grpc.core.utils;
 import interop.headers;
+import interop.functors;
 public import core.time;
 
 string slice_to_string(grpc_slice slice) {
@@ -10,15 +11,13 @@ string slice_to_string(grpc_slice slice) {
 T slice_to_type(T)(grpc_slice slice) 
 if(__traits(isPOD, T) && __traits(compiles, cast(T)[0x01, 0x02])) {
     import std.string : fromStringz;
-    const(char*) slice_c = grpc_slice_to_c_string(slice);
-
-    ubyte[] data = cast(ubyte[])slice_c[0..slice.data.inlined.length].dup;
-    data.length = slice.data.inlined.length;
-
-    T o = cast(T)data;
-
-    gpr_free(cast(void*)slice_c);
-
+    
+    T o;
+    if (GRPC_SLICE_LENGTH(slice) != 0) {
+        ubyte[] data = cast(ubyte[])GRPC_SLICE_START_PTR(slice)[0..GRPC_SLICE_LENGTH(slice)].dup;
+        o = cast(T)data;
+    }
+    
     return o;
 }
 
@@ -41,11 +40,11 @@ T byte_buffer_to_type(T)(grpc_byte_buffer* bytebuf) {
 grpc_slice string_to_slice(string _string) {
     grpc_slice slice;
     import std.string : toStringz;
-    slice = grpc_slice_from_copied_buffer(_string.toStringz, _string.length);
+    slice = grpc_slice_from_copied_buffer(_string.ptr, _string.length);
     return slice;
 }
 
-grpc_slice type_to_slice(T)(T type) {
+grpc_slice type_to_slice(T)(ref T type) {
     grpc_slice slice;
     slice = grpc_slice_from_copied_buffer(cast(const(char*))type.ptr, type.length);
     return slice;

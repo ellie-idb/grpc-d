@@ -7,11 +7,10 @@ import grpc.common.call;
 import grpc.core.utils;
 import grpc.common.batchcall;
 import automem;
-import stdx.allocator : theAllocator, make, dispose;
+import std.experimental.allocator : theAllocator, make, dispose;
 
 class ServerReader(T) {
     private {
-        BatchCall batch;
         CompletionQueue!"Next" _cq;
     }
     import grpc.common.byte_buffer;
@@ -27,7 +26,6 @@ class ServerReader(T) {
         if(len != 0) {
             ubyte[] data = _tag.ctx.data.readAll();
             protobuf = data.fromProtobuf!T();
-            destroy(data);
         }
         return protobuf;
     }
@@ -82,7 +80,7 @@ class ServerReader(T) {
 
                     yield(protobuf);
 
-                    batch.addOp(new RecvMessageOp(bf));
+                    batch.addOp(theAllocator.make!RecvMessageOp(bf));
                     auto stat = batch.run(_cq, _tag, d);
                     if(stat != GRPC_CALL_OK) {
                         ERROR!"READ ERROR: %s"(stat);
@@ -99,24 +97,16 @@ class ServerReader(T) {
 
     void finish(Tag* tag) {
         DEBUG!"finishing";
-        batch.addOp(RecvCloseOnServerOp());
-        DEBUG!"running!"();
-        auto stat = batch.run(_cq, tag);
+        RecvCloseOnServerOp op = theAllocator.make!RecvCloseOnServerOp();
+        BatchCall.runSingleOp(op, _cq, tag);
+        theAllocator.dispose(op);
     }
 
     this(CompletionQueue!"Next" cq) {
         import std.stdio;
         _cq = cq;
-        batch = BatchCall();
     }
 
     ~this() {
-        theAllocator.dispose(batch);
     }
-    
-    static ServerReader!T opCall(CompletionQueue!"Next" cq) @trusted {
-        ServerReader!T obj = theAllocator.make!(ServerReader!T)(cq);
-        return obj;
-    }
-    
 }

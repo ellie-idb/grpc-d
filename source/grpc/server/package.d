@@ -14,7 +14,7 @@ import core.thread;
 class Server 
 {
     private {
-        shared GPRMutex mutex;
+        GPRMutex mutex;
         SharedResource _server;
         ServiceHandlerInterface[string] services;
         bool started;
@@ -158,7 +158,7 @@ class Server
 
             _run = true;
             _server = SharedResource(cast(shared)srv, &release);
-            mutex = GPRMutex();
+            mutex = theAllocator.make!GPRMutex();
         } else {
             throw new Exception("server creation failed");
         }

@@ -6,7 +6,7 @@ import grpc.core.mutex;
 
 class ByteBuffer {
     private {
-        shared GPRMutex mutex;
+        GPRMutex mutex;
         SharedResource _buf;
         grpc_byte_buffer_reader reader;
         bool _readerInit;
@@ -140,7 +140,7 @@ class ByteBuffer {
         grpc_byte_buffer** buf = cast(grpc_byte_buffer**)gpr_zalloc((grpc_byte_buffer**).sizeof);
         if (buf != null) {
             _buf = SharedResource(cast(shared)buf, &release);
-            mutex = GPRMutex();
+            mutex = theAllocator.make!GPRMutex();
         } else {
             throw new Exception("malloc failed");
         }
@@ -164,9 +164,7 @@ class ByteBuffer {
     }
     
     ~this() {
-        theAllocator.dispose(mutex);
         _buf.forceRelease();
-        destroy(_buf);
-        destroy(reader);
+        theAllocator.dispose(mutex);
     }
 }

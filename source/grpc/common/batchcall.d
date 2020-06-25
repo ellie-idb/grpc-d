@@ -8,12 +8,11 @@ import grpc.common.metadata;
 import grpc.common.byte_buffer;
 import grpc.logger;
 import std.exception : enforce;
-import stdx.allocator : theAllocator, make, dispose;
+import std.experimental.allocator : theAllocator, make, dispose;
 
 interface RemoteOp {
     grpc_op_type type();
     grpc_op value();
-    void free();
 }
 
 class SendInitialMetadataOp : RemoteOp {
@@ -29,7 +28,7 @@ class SendInitialMetadataOp : RemoteOp {
         grpc_op ret;
 
         ret.op = type();
-        ret.data.send_initial_metadata.metadata = array.data;
+        ret.data.send_initial_metadata.metadata = array.handle.metadata;
         ret.data.send_initial_metadata.count = array.count;
 
         return ret;
@@ -37,15 +36,11 @@ class SendInitialMetadataOp : RemoteOp {
     
     void free() {
         theAllocator.dispose(array);
+        array = null;
     }
 
     this() {
-        array = MetadataArray();
-    }
-    
-    static SendInitialMetadataOp opCall() @trusted {
-        SendInitialMetadataOp obj = theAllocator.make!SendInitialMetadataOp();
-        return obj;
+        array = theAllocator.make!MetadataArray();
     }
     
     ~this() {
@@ -76,14 +71,10 @@ class SendMessageOp : RemoteOp {
     
     void free() {
         theAllocator.dispose(_buf);
-    }
-    
-    static SendMessageOp opCall(ref ubyte[] message) @trusted {
-        SendMessageOp obj = theAllocator.make!SendMessageOp(message);
-        return obj;
+        _buf = null;
     }
 
-    ~this() @trusted {
+    ~this() {
         free;
     }
 }
@@ -91,8 +82,9 @@ class SendMessageOp : RemoteOp {
 class SendStatusFromServerOp : RemoteOp {
     private {
         MetadataArray _trailing_metadata;
-        grpc_status_code _status;
-        grpc_slice _details;
+        void* addrOnAlloc;
+        //grpc_status_code _status;
+        //grpc_slice _details;
     }
 
     grpc_op_type type() {
@@ -100,40 +92,47 @@ class SendStatusFromServerOp : RemoteOp {
     }
 
     grpc_op value() {
-        grpc_op ret;
+        static grpc_op ret;
         ret.op = type();
-        ret.data.send_status_from_server.status_details = &_details;
-        ret.data.send_status_from_server.status = _status;
-        ret.data.send_status_from_server.trailing_metadata_count =  _trailing_metadata.count;
-        if (_trailing_metadata.count != 0) {
-            ret.data.send_status_from_server.trailing_metadata = _trailing_metadata.data;
-        }
-
+        //ret.data.send_status_from_server.status_details = &_details;
+        //ret.data.send_status_from_server.status = cast(grpc_status_code)0;
+        //ret.data.send_status_from_server.trailing_metadata_count = 0;
+        //ret.data.send_status_from_server.trailing_metadata = _trailing_metadata.handle.metadata;
+        
+        
         return ret;
     }
     
     void free() {
-        grpc_slice_unref(_details);
-        
-        if (_trailing_metadata !is null) {
-            theAllocator.dispose(_trailing_metadata);
-            _trailing_metadata = null;
+        DEBUG!"%x vs %x"(cast(void*)_trailing_metadata, addrOnAlloc);
+        if (cast(void*)_trailing_metadata != addrOnAlloc) { // THIS shouldn't happen, but it does?
+            ERROR!"WHAT THE FUCK?";
+        } else {
+            theAllocator.dispose(this._trailing_metadata);
         }
+        
+        //grpc_slice_unref(_details);
     }
         
     this(grpc_status_code code, string details) {
-        _trailing_metadata = MetadataArray();
-        _details = string_to_slice(details.dup);
-        _status = code;
+        //_details = grpc_empty_slice();
+        //_status = code;
+        _trailing_metadata = theAllocator.make!MetadataArray();
+        addrOnAlloc = cast(void*)_trailing_metadata;
     }
     
-    static SendStatusFromServerOp opCall(grpc_status_code code, string details) @trusted {
-        SendStatusFromServerOp obj = theAllocator.make!SendStatusFromServerOp(code, details);
-        return obj;
+    this() {
+        //details = grpc_empty_slice();
+        //_status = cast(grpc_status_code)0;
+        _trailing_metadata = theAllocator.make!MetadataArray();
+        addrOnAlloc = cast(void*)_trailing_metadata;
     }
 
     ~this() {
         free;
+        //_trailing_metadata = null;
+        
+        //grpc_slice_unref(_details);
     }
 }
 
@@ -159,12 +158,7 @@ class RecvInitialMetadataOp : RemoteOp {
     }
     
     this() {
-        _metadata = MetadataArray();
-    }
-    
-    static RecvInitialMetadataOp opCall() @trusted {
-        RecvInitialMetadataOp obj = theAllocator.make!RecvInitialMetadataOp();
-        return obj;
+        _metadata = theAllocator.make!MetadataArray();
     }
     
     ~this() {
@@ -196,9 +190,8 @@ class RecvMessageOp : RemoteOp {
         _buf = &buf;
     }
     
-    static RecvMessageOp opCall(ref ByteBuffer buf) @trusted {
-        RecvMessageOp obj = theAllocator.make!RecvMessageOp(buf);
-        return obj;
+    ~this() {
+        free;
     }
 }
 
@@ -243,35 +236,39 @@ class RecvCloseOnServerOp : RemoteOp {
     this() {
     }
     
-    ~this() {
+    ~this() {  
         free;
-    }
-    
-    static RecvCloseOnServerOp opCall() @trusted {
-        RecvCloseOnServerOp obj = theAllocator.make!RecvCloseOnServerOp();
-        return obj;
     }
 }
 
 class BatchCall {
     private {
-        RemoteOp[] ops;
-        bool sanityCheck() {
-            int[int] count;
-            foreach(op; ops) {
-                count[op.type()]++;
-                if(count[op.type()] > 1) {
-                    return false;
-                }
-            }
-            return true;
-        }
+        Vector!(RemoteOp) ops;
     }
 
     void addOp(RemoteOp _op) {
+        import std.algorithm.mutation;
         ops ~= _op;
     }
     
+    static grpc_call_error runSingleOp(RemoteOp _op, CompletionQueue!"Next" cq, Tag* _tag, Duration d = 1.seconds) {
+        assert(*_tag.ctx.call, "call should never be null");
+    
+        grpc_op[1] op;
+        op[0] = _op.value();
+        DEBUG!"starting batch on tag (%x, ops: %d)"(_tag, 1);
+        auto status = grpc_call_start_batch(*_tag.ctx.call, op.ptr, 1, _tag, null);  
+        if(status == GRPC_CALL_OK) {
+            import core.time;
+            cq.next(d);
+            DEBUG!"finished batch on tag: %x"(_tag);
+        } else {
+            ERROR!"STATUS: %s"(status);
+        }
+        
+        return status;
+    }
+        
     import grpc.core.tag;
     import core.time;
     import grpc.common.cq;
@@ -282,7 +279,7 @@ class BatchCall {
     // the library can't adequately catch the event (and may result in odd cancellations)
     
     grpc_call_error run(CompletionQueue!"Next" cq, Tag* _tag, Duration d = 1.seconds) { 
-        assert(sanityCheck(), "failed sanity check");
+        //assert(sanityCheck(), "failed sanity check");
         assert(_tag != null, "tag should never be null");
         Vector!(grpc_op) _ops;
 
@@ -300,42 +297,41 @@ class BatchCall {
             ERROR!"STATUS: %s"(status);
         }
         
-        _ops.free;
         reset;
 
         return status;
     }
     
     void reset() {
+        DEBUG!"Resetting operations (length: %d)"(ops.length);
         for(int i = 0; i < ops.length; i++) {
-            RemoteOp op = ops[i];
-            Object obj = cast(Object)op;
-            static foreach(sym; __traits(allMembers, mixin(__MODULE__))) {
-                static if(sym[$ - 2 .. $] == "Op" && sym != "RemoteOp") {{
+            if (ops[i] is null) continue;
+            
+            Object obj = cast(Object)ops[i];
+            auto type = typeid(obj);
+            static foreach(sym; __traits(allMembers, mixin(__MODULE__))) {{
+                static if(sym[$ - 2 .. $] == "Op" && sym != "RemoteOp") {
+                    pragma(msg, sym);
                     mixin("alias T = " ~ sym ~ ";");
-                    if (obj !is null && typeid(obj) == typeid(T)) {
+                    if (obj !is null && type == typeid(T)) {
                         T realObj = cast(T)obj;
-                        INFO!"Freeing %s"(sym);
-                        goto end;
+                        realObj.free;
+                        DEBUG!"Freeing %s (%x) (index %d/%d)"(sym, cast(void*)realObj, i, ops.length);
+                        theAllocator.dispose(realObj);
+                        DEBUG!"OK!";
+                        obj = null;
                     }
-                }}
-            }
-end:
-            theAllocator.dispose(op);
+                }
+            }}
         }
         
-        ops.length = 0;
+        ops.free;
     }
 
     this() {
-    }
-    
-    static BatchCall opCall() @trusted {
-        BatchCall obj = theAllocator.make!BatchCall();
-        return obj;
+        ops = Vector!(RemoteOp)();
     }
 
     ~this() {
-        reset;
     }
 }

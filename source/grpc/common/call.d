@@ -11,7 +11,7 @@ import core.memory : GC;
 
 struct CallContext {
 @safe:
-    shared GPRMutex mutex;
+    GPRMutex mutex;
     grpc_call** call;
     CallDetails details;
     MetadataArray metadata;
@@ -19,9 +19,9 @@ struct CallContext {
 
     static CallContext opCall() @trusted {
         CallContext obj;
-        obj.mutex = GPRMutex();
+        obj.mutex = theAllocator.make!GPRMutex();
         obj.details = CallDetails();
-        obj.metadata = MetadataArray();
+        obj.metadata = theAllocator.make!MetadataArray();
         obj.data = ByteBuffer();
         obj.call = cast(grpc_call**)gpr_zalloc((grpc_call**).sizeof); 
 
@@ -31,8 +31,7 @@ struct CallContext {
     ~this() @trusted {
         gpr_free(cast(void*)call);
         destroy(details);
-        destroy(metadata);
-        destroy(data);
+        theAllocator.dispose(metadata);
         theAllocator.dispose(data);
         theAllocator.dispose(mutex);
     }
@@ -43,7 +42,7 @@ struct CallContext {
 struct CallDetails {
 @safe:
     private {
-        shared GPRMutex mutex;
+        GPRMutex mutex;
         SharedResource _details;
     }
 
@@ -79,7 +78,7 @@ struct CallDetails {
 
     static CallDetails opCall() @trusted {
         CallDetails obj;
-        obj.mutex = GPRMutex();
+        obj.mutex = theAllocator.make!GPRMutex();
         grpc_call_details* details;
 
         if ((details = cast(grpc_call_details*)gpr_zalloc((grpc_call_details).sizeof)) != null) {

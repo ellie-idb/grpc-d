@@ -7,7 +7,7 @@ import grpc.core;
 import grpc.core.mutex;
 import grpc.core.resource;
 import grpc.core.utils;
-import stdx.allocator : theAllocator, make, dispose;
+import std.experimental.allocator : theAllocator, make, dispose;
 
 //queue ok/ok type
 alias NextStatus = Tuple!(bool, bool);
@@ -25,7 +25,7 @@ class CompletionQueue(string T)
 {
 @safe:
     private { 
-        shared GPRMutex mutex;
+        GPRMutex mutex;
         SharedResource _cq;
     }
 
@@ -119,7 +119,7 @@ class CompletionQueue(string T)
         }
 
         _cq = SharedResource(cast(shared)cq, &release);
-        mutex = GPRMutex();
+        mutex = theAllocator.make!GPRMutex();
     }
 
 

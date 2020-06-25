@@ -1,27 +1,15 @@
 module grpc.core.resource;
-public import stdx.allocator : theAllocator, make, dispose;
+public import std.experimental.allocator : theAllocator, make, dispose;
 
-shared struct SharedResource
+struct SharedResource
 {
+@safe:
     alias Exception function(shared(void)*) nothrow Release;
 
-    this(shared(void)* ptr, Release release) @trusted nothrow
+    this(shared(void)* ptr, Release release) nothrow
         in { assert(ptr); } body
     {
-        Payload* pay;
-        try {
-            pay = theAllocator.make!Payload();
-        } catch(Exception e) {
-            // something must've gone HORRIBLY wrong for this to fail
-            assert(0, "should never occur");
-        }
-        
-        pay.refCount = 1;
-        pay.handle = cast(void*)ptr;
-        pay.release = release;
-        
-        m_payload = cast(shared(Payload*))pay;
-        
+        m_payload = new shared(Payload)(1, ptr, release);
     }
 
     this(this) nothrow
@@ -31,7 +19,7 @@ shared struct SharedResource
         }
     }
 
-    ~this()
+    ~this() nothrow
     {
         nothrowDetach();
     }
@@ -52,10 +40,7 @@ shared struct SharedResource
     void forceRelease() @system
     {
         if (m_payload) {
-            scope(exit) { 
-                theAllocator.dispose(cast(Payload*)m_payload);
-                m_payload = null;
-            }
+            scope(exit) m_payload = null;
             decRefCount();
             if (m_payload.handle != null) {
                 scope(exit) m_payload.handle = null;
@@ -95,16 +80,9 @@ private:
         body
     {
         if (m_payload) {
+            scope(exit) m_payload = null;
             if (decRefCount() < 1 && m_payload.handle != null) {
-                Exception e = m_payload.release(m_payload.handle);
-                try {
-                    theAllocator.dispose(cast(Payload*)m_payload);
-                } catch(Exception e) {
-                    assert(0, "should never occur");
-                }
-                
-                m_payload = null;
-                return e;
+                return m_payload.release(m_payload.handle);
             }
         }
         return null;
