@@ -74,27 +74,39 @@ class Service(T) : ServiceHandlerInterface {
         __gshared bool _run;
 
         void run() {
-            /* First, request all calls (this will be done when the Server requests us to initialize) */
-            /* As well, create a thread-local completion queue */
+
+            /* 
+               PHASE 1:
+               First, we create every thread-local structure. This includes:
+               a servicerInstance, where we send requests to. (DO NOT EXPECT a global instance to exist)
+               As well, we generate our thread-local completion queues here (to avoid pitfalls with global CQs and queues),
+               and register them with the server, then block while we wait for every thread to synchronize progress.
+            */
             import core.memory : GC;
+            // GC gets in the way (and leads to spurious segfaults)
             GC.disable;
             
             _serviceInstance = new T();
             notificationCq = CompletionQueue!"Next"();
             callCq = CompletionQueue!"Next"();
 
-            DEBUG!"registering";
+            DEBUG!"registering (thread: %d)"(workerIndex);
             _server.registerQueue(notificationCq);
-
-            DEBUG!"every thread OK!";
-
+            DEBUG!"registered (thread: %d)"(workerIndex);
             atomicOp!"+="(threadInitDone, 1);
 
             while (!atomicLoad(threadOk)) {
                 Thread.sleep(1.msecs);
             }
 
-            
+            /* 
+               PHASE 2:
+               Here, we duplicate the global Tag table, and register the call associated with it
+               to our thread-local completion queue. This ensures that we'll get notified when the Server 
+               receives a call with it's method name.
+            */
+
+            DEBUG!"beginning phase 2 (thread: %d)"(workerIndex);
             // DUPLICATE every tag into a thread-local tag cache, and mark it such
             Tag*[] tlsTags;
             foreach (_tag; tags) {
@@ -114,7 +126,12 @@ class Service(T) : ServiceHandlerInterface {
                 
                 callCq.requestCall(tag.method, tag, _server, notificationCq); 
             }
-            
+
+            /*
+                PHASE 3:
+                Here, we begin the main loop to service requests. This continues,
+                until the queue is shutdown, or _run is set to false.
+            */
             _run = true;
             while (_run) {
                 auto item = notificationCq.next(10.seconds);
@@ -126,6 +143,7 @@ class Service(T) : ServiceHandlerInterface {
                     _run = false;
                     continue;
                 } else if(item.type == GRPC_QUEUE_TIMEOUT) {
+                    // collect while we're timed out
                     DEBUG!"timeout";
                     GC.collect;
                     continue;
@@ -134,32 +152,36 @@ class Service(T) : ServiceHandlerInterface {
                 DEBUG!"grabbing tag";
                 Tag* tag = cast(Tag*)item.tag;
                 DEBUG!"got tag: %x"(tag);
+
+                // xxx: should never happen
                 if (tag == null) {
                     ERROR!"got null tag?";
                     continue;
                 }
-                
-                // xxx: should never happen
+
+                // ditto, should never happen
                 if (tag.metadata[5] != cast(ubyte)workerIndex) {
                     ERROR!"DROPPED CALL";
                     continue;
                 }
-                
-                // otherwise, it's our tag and we have to pop it off 
 
+                // ditto, should never happen
                 if (tag.metadata[4] >= tlsTags.length) {
                     ERROR!"got a large tag??";
                     continue;
                 }
 
-                DEBUG!"done";
+                DEBUG!"running handler";
 
+                // call the compiler-generated handler here with our thread-local data
                 try { 
                     handlers[tag.metadata[4]](callCq, _serviceInstance, tag);
                 } catch(Exception e) {
                     import grpc.common.batchcall;
                     import interop.headers;
                     ERROR!"CAUGHT EXCEPTION: %s"(e.msg);
+
+                    // if it threw, we need to send that data back to the client (or else they're continually waiting for a response)
 
                     BatchCall call = new BatchCall();
                     call.addOp(theAllocator.make!RecvCloseOnServerOp());
@@ -168,6 +190,7 @@ class Service(T) : ServiceHandlerInterface {
                     call.run(callCq, tag);
                 }
 
+                // make sure we can live to service another call!
                 grpc_call_error error = callCq.requestCall(tag.method, tag, _server, notificationCq);
                 if (error != GRPC_CALL_OK) {
                     ERROR!"could not request call %s"(error);
@@ -179,6 +202,7 @@ class Service(T) : ServiceHandlerInterface {
     import std.traits;
     private {
         shared int threadInitDone = 0;
+        // shared synchronization primitive
         shared bool threadOk;
         int[funcType] _funcCount;
         
@@ -187,7 +211,7 @@ class Service(T) : ServiceHandlerInterface {
         Server _server;
         ThreadGroup threads;
         ServicerThread[] _threads; // do not ever use
-        ulong workingThreads;
+        immutable ulong workingThreads;
         immutable ulong _serviceId;
 
         enum funcType {
@@ -310,7 +334,7 @@ class Service(T) : ServiceHandlerInterface {
                                 DEBUG!"reading";
                                 funcIn = reader.readOne(_tag);
                                 reader.finish(_tag);
-                                
+
                                 DEBUG!"passing off to user";
                                 mixin("stat = instance." ~ __traits(identifier, val) ~ "(funcIn, funcOut);");
                                 DEBUG!"starting write";

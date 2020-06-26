@@ -82,9 +82,8 @@ class SendMessageOp : RemoteOp {
 class SendStatusFromServerOp : RemoteOp {
     private {
         MetadataArray _trailing_metadata;
-        void* addrOnAlloc;
-        //grpc_status_code _status;
-        //grpc_slice _details;
+        grpc_status_code _status;
+        grpc_slice _details;
     }
 
     grpc_op_type type() {
@@ -92,47 +91,35 @@ class SendStatusFromServerOp : RemoteOp {
     }
 
     grpc_op value() {
-        static grpc_op ret;
+        grpc_op ret;
         ret.op = type();
-        //ret.data.send_status_from_server.status_details = &_details;
-        //ret.data.send_status_from_server.status = cast(grpc_status_code)0;
-        //ret.data.send_status_from_server.trailing_metadata_count = 0;
-        //ret.data.send_status_from_server.trailing_metadata = _trailing_metadata.handle.metadata;
-        
+        ret.data.send_status_from_server.status_details = &_details;
+        ret.data.send_status_from_server.status = _status;
+        ret.data.send_status_from_server.trailing_metadata_count = _trailing_metadata.count;
+        ret.data.send_status_from_server.trailing_metadata = _trailing_metadata.handle.metadata;
         
         return ret;
     }
     
     void free() {
-        DEBUG!"%x vs %x"(cast(void*)_trailing_metadata, addrOnAlloc);
-        if (cast(void*)_trailing_metadata != addrOnAlloc) { // THIS shouldn't happen, but it does?
-            ERROR!"WHAT THE FUCK?";
-        } else {
-            theAllocator.dispose(this._trailing_metadata);
-        }
-        
-        //grpc_slice_unref(_details);
+        theAllocator.dispose(this._trailing_metadata);
+        grpc_slice_unref(_details);
     }
         
     this(grpc_status_code code, string details) {
-        //_details = grpc_empty_slice();
-        //_status = code;
+        _details = string_to_slice(details);
+        _status = code;
         _trailing_metadata = theAllocator.make!MetadataArray();
-        addrOnAlloc = cast(void*)_trailing_metadata;
     }
     
     this() {
-        //details = grpc_empty_slice();
-        //_status = cast(grpc_status_code)0;
+        _details = grpc_empty_slice();
+        _status = cast(grpc_status_code)0;
         _trailing_metadata = theAllocator.make!MetadataArray();
-        addrOnAlloc = cast(void*)_trailing_metadata;
     }
 
     ~this() {
         free;
-        //_trailing_metadata = null;
-        
-        //grpc_slice_unref(_details);
     }
 }
 
@@ -211,11 +198,11 @@ class RecvStatusOnClientOp : RemoteOp {
 
 class RecvCloseOnServerOp : RemoteOp {
     private {
-        int _cancelled = 0;
+        int* _cancelled;
     }
 
     int cancelled() {
-        return _cancelled;
+        return *_cancelled;
     }
 
     grpc_op_type type() {
@@ -225,15 +212,17 @@ class RecvCloseOnServerOp : RemoteOp {
     grpc_op value() {
         grpc_op ret;
         ret.op = type();
-        ret.data.recv_close_on_server.cancelled = &_cancelled;
+        ret.data.recv_close_on_server.cancelled = _cancelled;
 
         return ret;
     }
 
     void free() {
+        theAllocator.dispose(_cancelled);
     }
     
     this() {
+        _cancelled = theAllocator.make!int(0);
     }
     
     ~this() {  
@@ -265,7 +254,8 @@ class BatchCall {
         } else {
             ERROR!"STATUS: %s"(status);
         }
-        
+
+        destroy(op);
         return status;
     }
         

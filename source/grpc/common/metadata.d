@@ -54,10 +54,6 @@ class MetadataArray {
 
     this() {
         static Exception release(shared(void)* ptr) @trusted nothrow {
-            try {
-                import std.stdio;
-                writeln("freed");
-            } catch(Exception e){}
             grpc_metadata_array* array = cast(grpc_metadata_array*)ptr;
             if (array.metadata) {
                 gpr_free(cast(void*)array.metadata);
