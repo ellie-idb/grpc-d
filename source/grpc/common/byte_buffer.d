@@ -60,10 +60,7 @@ class ByteBuffer {
         
         assert(valid, "byte buffer was not valid");
 
-        ubyte[] o = byte_buffer_to_type!(ubyte[])(unsafeHandle);
-
-        DEBUG!"????? %x"(o.ptr);
-        return o;
+        return byte_buffer_to_type!(ubyte[])(unsafeHandle);
     }
 
     ubyte[] read() {

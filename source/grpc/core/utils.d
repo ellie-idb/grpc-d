@@ -31,8 +31,9 @@ auto ref byte_buffer_to_type(T)(grpc_byte_buffer* bytebuf) {
         grpc_byte_buffer_reader_init(&reader, bytebuf);
         grpc_slice slices = grpc_byte_buffer_reader_readall(&reader);
         grpc_byte_buffer_reader_destroy(&reader);
-        scope(exit) grpc_slice_unref(slices);
-        return slice_to_type!T(slices);
+        auto val = slice_to_type!T(slices);
+        grpc_slice_unref(slices);
+        return val;
 }
 
 /* ensure that you unref after this.. don't want to keep a slice around too long */

@@ -78,13 +78,14 @@ class Service(T) : ServiceHandlerInterface {
                As well, we generate our thread-local completion queues here (to avoid pitfalls with global CQs and queues),
                and register them with the server, then block while we wait for every thread to synchronize progress.
             */
-
             import std.experimental.allocator.mallocator: Mallocator;
             import std.experimental.allocator : theAllocator, allocatorObject;
             
             theAllocator = allocatorObject(Mallocator.instance);
-
             
+            import core.memory : GC;
+            GC.disable;
+
             _serviceInstance = theAllocator.make!T();
             notificationCq = theAllocator.make!(CompletionQueue!"Next")();
             callCq = theAllocator.make!(CompletionQueue!"Next")();
@@ -134,8 +135,6 @@ class Service(T) : ServiceHandlerInterface {
 
             // GC gets in the way (and leads to spurious segfaults)
             
-//            import core.memory : GC;
-//            GC.disable;
 
             _run = true;
             while (_run) {
@@ -150,7 +149,7 @@ class Service(T) : ServiceHandlerInterface {
                 } else if(item.type == GRPC_QUEUE_TIMEOUT) {
                     // collect while we're timed out
                     DEBUG!"timeout";
-           //         GC.collect;
+                    GC.collect;
                     continue;
                 }
 
@@ -204,9 +203,9 @@ class Service(T) : ServiceHandlerInterface {
                 }
             }
 
-            theAllocator.dispose(callCq);
-            theAllocator.dispose(notificationCq);
-            theAllocator.dispose(_serviceInstance);
+            //theAllocator.dispose(callCq);
+            //theAllocator.dispose(notificationCq);
+            //theAllocator.dispose(_serviceInstance);
         }
     }
     import std.typecons;
@@ -344,7 +343,6 @@ class Service(T) : ServiceHandlerInterface {
                                 DEBUG!"func call: regular";
                                 DEBUG!"reading";
                                 funcIn = reader.readOne(_tag);
-                                reader.finish(_tag);
 
                                 DEBUG!"passing off to user";
                                 mixin("stat = instance." ~ __traits(identifier, val) ~ "(funcIn, funcOut);");
@@ -353,8 +351,10 @@ class Service(T) : ServiceHandlerInterface {
                                 DEBUG!"writing";
                                 writer.write(_tag, funcOut);
                                 DEBUG!"done write";
-                                
                                 writer.finish(_tag, stat);
+                                // RecvCloseOnServerOp needs to be at the end, or we will
+                                // run into heap corruption (since we free every operation at the end)
+                                reader.finish(_tag);
                             }
                             else static if(hasUDA!(val, ClientStreaming) && hasUDA!(val, ServerStreaming)) {
                                 DEBUG("func call: bidi");
