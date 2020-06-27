@@ -7,7 +7,7 @@ import grpc.common.call;
 import grpc.core.utils;
 import grpc.common.batchcall;
 import automem;
-import std.experimental.allocator : theAllocator, make, dispose;
+import std.experimental.allocator : theAllocator, make, makeArray, dispose;
 
 class ServerReader(T) {
     private {
@@ -24,8 +24,14 @@ class ServerReader(T) {
         ulong len = _tag.ctx.data.length;
         DEBUG!"bf.length: %d"(len);
         if(len != 0) {
-            ubyte[] data = _tag.ctx.data.readAll();
-            protobuf = data.fromProtobuf!T();
+            auto data = _tag.ctx.data.readAll();
+            if (data.length != 0) { 
+                void* ubytePtr = data.ptr;
+                DEBUG!"POINTER: %x (or %x?)"(cast(void*)data, data.ptr);
+                protobuf = fromProtobuf!(T, ubyte[])(data);
+
+                theAllocator.dispose(cast(ubyte*)ubytePtr);
+            }
         }
         return protobuf;
     }

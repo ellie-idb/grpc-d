@@ -149,6 +149,11 @@ class Server
     }
 
     this(grpc_channel_args args) @trusted {
+        import std.experimental.allocator.mallocator: Mallocator;
+        import std.experimental.allocator : theAllocator, allocatorObject;
+            
+        theAllocator = allocatorObject(Mallocator.instance);
+
         grpc_server* srv = grpc_server_create(&args, null);
         if (srv != null) {
             static Exception release(shared(void)* ptr) @trusted nothrow {

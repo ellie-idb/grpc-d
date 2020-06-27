@@ -52,10 +52,23 @@ class MetadataArray {
         return &handle.metadata[i1];
     }
 
+    void cleanup() {
+        if (handle.metadata != null) { 
+            grpcwrap_metadata_array_destroy_metadata_only(handle);
+            handle.metadata = null;
+            handle.count = 0;
+            handle.capacity = 0;
+        }
+    }
+
     this() {
         static Exception release(shared(void)* ptr) @trusted nothrow {
             grpc_metadata_array* array = cast(grpc_metadata_array*)ptr;
             if (array.metadata) {
+                for (int i = 0; i < array.count; i++) {
+                    grpc_slice_unref(array.metadata[i].key);
+                    grpc_slice_unref(array.metadata[i].value);
+                }
                 gpr_free(cast(void*)array.metadata);
                 array.metadata = null;
             }

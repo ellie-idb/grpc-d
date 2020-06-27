@@ -46,10 +46,6 @@ class Service(T) : ServiceHandlerInterface {
     alias ServiceHandlerType = void function(CompletionQueue!"Next", T, Tag*);
     class ServicerThread : Thread {
         this() {
-            import std.experimental.allocator.mallocator: Mallocator;
-            import std.experimental.allocator : theAllocator, allocatorObject;
-            
-            theAllocator = allocatorObject(Mallocator.instance);
             super(&run);
         }
         
@@ -82,13 +78,16 @@ class Service(T) : ServiceHandlerInterface {
                As well, we generate our thread-local completion queues here (to avoid pitfalls with global CQs and queues),
                and register them with the server, then block while we wait for every thread to synchronize progress.
             */
-            import core.memory : GC;
-            // GC gets in the way (and leads to spurious segfaults)
-            GC.disable;
+
+            import std.experimental.allocator.mallocator: Mallocator;
+            import std.experimental.allocator : theAllocator, allocatorObject;
             
-            _serviceInstance = new T();
-            notificationCq = CompletionQueue!"Next"();
-            callCq = CompletionQueue!"Next"();
+            theAllocator = allocatorObject(Mallocator.instance);
+
+            
+            _serviceInstance = theAllocator.make!T();
+            notificationCq = theAllocator.make!(CompletionQueue!"Next")();
+            callCq = theAllocator.make!(CompletionQueue!"Next")();
 
             DEBUG!"registering (thread: %d)"(workerIndex);
             _server.registerQueue(notificationCq);
@@ -132,6 +131,12 @@ class Service(T) : ServiceHandlerInterface {
                 Here, we begin the main loop to service requests. This continues,
                 until the queue is shutdown, or _run is set to false.
             */
+
+            // GC gets in the way (and leads to spurious segfaults)
+            
+//            import core.memory : GC;
+//            GC.disable;
+
             _run = true;
             while (_run) {
                 auto item = notificationCq.next(10.seconds);
@@ -145,7 +150,7 @@ class Service(T) : ServiceHandlerInterface {
                 } else if(item.type == GRPC_QUEUE_TIMEOUT) {
                     // collect while we're timed out
                     DEBUG!"timeout";
-                    GC.collect;
+           //         GC.collect;
                     continue;
                 }
 
@@ -180,6 +185,8 @@ class Service(T) : ServiceHandlerInterface {
                     import grpc.common.batchcall;
                     import interop.headers;
                     ERROR!"CAUGHT EXCEPTION: %s"(e.msg);
+                    ERROR!"FILE: %s:%d"(e.file, e.line);
+                    ERROR!"BACKTRACE: %s"(e.info);
 
                     // if it threw, we need to send that data back to the client (or else they're continually waiting for a response)
 
@@ -196,6 +203,10 @@ class Service(T) : ServiceHandlerInterface {
                     ERROR!"could not request call %s"(error);
                 }
             }
+
+            theAllocator.dispose(callCq);
+            theAllocator.dispose(notificationCq);
+            theAllocator.dispose(_serviceInstance);
         }
     }
     import std.typecons;
@@ -325,9 +336,9 @@ class Service(T) : ServiceHandlerInterface {
                             ServerWriter!(output) writer = theAllocator.make!(ServerWriter!(output))(queue);
 
                             /* results from our call */
-                            Status stat = Status.init;
-                            input funcIn = input.init;
-                            output funcOut = output.init;
+                            Status stat;
+                            input funcIn;
+                            output funcOut;
                             DEBUG!"func call: %s"(remoteName);
                             static if(hasUDA!(val, ClientStreaming) == 0 && hasUDA!(val, ServerStreaming) == 0) {
                                 DEBUG!"func call: regular";
@@ -379,16 +390,18 @@ class Service(T) : ServiceHandlerInterface {
                             */
                             // As well, free the byte buffer's memory
                             //DEBUG!"metadata: cap %d count %d"(_tag.ctx.metadata.capacity, _tag.ctx.metadata.count);
+                            theAllocator.dispose(reader);
+                            theAllocator.dispose(writer);
+
+                            grpc_call_unref(*_tag.ctx.call);
+                            *_tag.ctx.call = null;
+
+                            _tag.ctx.metadata.cleanup;
                             
                             if (_tag.ctx.data.valid) {
                                 _tag.ctx.data.cleanup;
                             }
-                            grpc_call_unref(*_tag.ctx.call);
-                            *_tag.ctx.call = null;
-                            
-                            theAllocator.dispose(reader);
-                            theAllocator.dispose(writer);
-                    };
+                     };
 
                     static if(hasUDA!(val, ClientStreaming) && hasUDA!(val, ServerStreaming)) {
                         pragma(msg, remoteName ~ ": Client && Server");
@@ -420,10 +433,10 @@ class Service(T) : ServiceHandlerInterface {
 
         for (ulong i = 0; i < workingThreads; i++) {
             auto t = new ServicerThread();
-            t.handlers = _handlers.dup;
+            t.handlers = _handlers;
             t.workerIndex = i;
             t.isDaemon = false;
-            t.tags = tags.dup;
+            t.tags = tags;
             t.start();
 
             threads.add(t);
@@ -444,7 +457,7 @@ class Service(T) : ServiceHandlerInterface {
         _serviceId = serviceId;
         threads = new ThreadGroup();
 
-        workingThreads = 1;
+        workingThreads = 8;
 
         with(funcType) { 
             _funcCount[NORMAL] = 0;

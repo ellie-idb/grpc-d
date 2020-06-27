@@ -53,15 +53,17 @@ class ByteBuffer {
         mutex.unlock;
     }
 
-    ubyte[] readAll() {
+    auto ref readAll() {
         import grpc.core.utils;
         lock;
         scope(exit) unlock;
         
         assert(valid, "byte buffer was not valid");
-        ubyte[] dat = byte_buffer_to_type!(ubyte[])(unsafeHandle);
 
-        return dat;
+        ubyte[] o = byte_buffer_to_type!(ubyte[])(unsafeHandle);
+
+        DEBUG!"????? %x"(o.ptr);
+        return o;
     }
 
     ubyte[] read() {
@@ -124,7 +126,6 @@ class ByteBuffer {
 
     this() @trusted {
         static Exception release(shared(void)* ptr) @trusted nothrow {
-            debug import std.stdio;
             grpc_byte_buffer** v = cast(grpc_byte_buffer**)ptr;
             if (v != null) {
                 if (*v != null) {

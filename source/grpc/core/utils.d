@@ -1,52 +1,50 @@
 module grpc.core.utils;
 import interop.headers;
 import interop.functors;
+import grpc.logger;
+import std.experimental.allocator : theAllocator, makeArray, dispose;
 public import core.time;
 
 string slice_to_string(grpc_slice slice) {
-    import std.string : fromStringz;
     return slice_to_type!string(slice);
 }
 
-T slice_to_type(T)(grpc_slice slice) 
+auto ref slice_to_type(T)(grpc_slice slice) 
 if(__traits(isPOD, T) && __traits(compiles, cast(T)[0x01, 0x02])) {
-    import std.string : fromStringz;
-    
-    T o;
     if (GRPC_SLICE_LENGTH(slice) != 0) {
-        ubyte[] data = cast(ubyte[])GRPC_SLICE_START_PTR(slice)[0..GRPC_SLICE_LENGTH(slice)].dup;
-        o = cast(T)data;
+        ubyte[] data = theAllocator.makeArray!ubyte(GRPC_SLICE_START_PTR(slice)[0..GRPC_SLICE_LENGTH(slice)]);
+        DEBUG!"MAKE SURE TO FREE THIS ARRAY: %x"(data.ptr);
+        DEBUG!"data size: %d"(data.length);
+        return cast(T)data;
     }
+
+    return null;
     
-    return o;
 }
 
 string byte_buffer_to_string(grpc_byte_buffer* bytebuf) {
         return byte_buffer_to_type!string(bytebuf);
 }
 
-T byte_buffer_to_type(T)(grpc_byte_buffer* bytebuf) {
+auto ref byte_buffer_to_type(T)(grpc_byte_buffer* bytebuf) {
         grpc_byte_buffer_reader reader;
         grpc_byte_buffer_reader_init(&reader, bytebuf);
         grpc_slice slices = grpc_byte_buffer_reader_readall(&reader);
-        T _s = slice_to_type!T(slices);
-        grpc_slice_unref(slices);
         grpc_byte_buffer_reader_destroy(&reader);
-        return _s;
+        scope(exit) grpc_slice_unref(slices);
+        return slice_to_type!T(slices);
 }
 
 /* ensure that you unref after this.. don't want to keep a slice around too long */
 
 grpc_slice string_to_slice(string _string) {
-    grpc_slice slice;
     import std.string : toStringz;
-    slice = grpc_slice_from_copied_buffer(_string.ptr, _string.length);
+    grpc_slice slice = grpc_slice_from_copied_string(_string.toStringz);
     return slice;
 }
 
-grpc_slice type_to_slice(T)(ref T type) {
-    grpc_slice slice;
-    slice = grpc_slice_from_copied_buffer(cast(const(char*))type.ptr, type.length);
+grpc_slice type_to_slice(T)(T type) {
+    grpc_slice slice = grpc_slice_from_copied_buffer(cast(const(char*))type.ptr, type.length);
     return slice;
 }
     
@@ -78,5 +76,5 @@ void doNotMoveObject(void* ptr, size_t len) @trusted nothrow {
 void okToMoveObject(void* ptr) @trusted nothrow {
     GC.removeRoot(ptr);
     GC.clrAttr(cast(void*)ptr, GC.BlkAttr.NO_MOVE);
-//    GC.removeRange(ptr);
+    GC.removeRange(ptr);
 }

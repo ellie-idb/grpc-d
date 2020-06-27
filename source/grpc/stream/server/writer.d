@@ -8,7 +8,7 @@ import grpc.common.batchcall;
 import grpc.common.call;
 import core.atomic;
 import automem;
-import std.experimental.allocator : theAllocator, make, dispose;
+import std.experimental.allocator : theAllocator, make, dispose, makeArray;
 
 class ServerWriter(T) {
     private {
@@ -26,20 +26,21 @@ class ServerWriter(T) {
         return true;
     }
 
-    bool write(Tag* tag, ref T obj) {
+    bool write(Tag* tag, T obj) {
         import std.array;
         import google.protobuf;
         
         if(!started) {
             return false;
         }
-        ubyte[] _out = obj.toProtobuf.array;
+        ubyte[] _out = theAllocator.makeArray!ubyte(obj.toProtobuf.array);
         DEBUG!"running";
         SendMessageOp op = theAllocator.make!SendMessageOp(_out);
         BatchCall.runSingleOp(op, _cq, tag);
         theAllocator.dispose(op);
+        theAllocator.dispose(_out);
 
-        
+        destroy(_out);
         return true;
     }
 

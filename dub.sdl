@@ -3,13 +3,13 @@ description "gRPC Core Implementation for DLang"
 authors "Harrison Ford"
 copyright "Copyright © 2020, Harrison Ford"
 license "WTFPL"
-dependency "protobuf" version="~>0.6.0"
+dependency "protobuf" version="~>0.6.2"
 dependency "automem" version="~>0.6.2"
 dependency "grpc-d-interop" version="~master"
 libs "grpc" "grpcpp_channelz"
 configuration "library" {
 	targetType "library"
-	dflags "-dip25" "-dip1000" "-dip1008"
+	dflags "-dip25" "-dip1000"
 }
 
 configuration "asan" {

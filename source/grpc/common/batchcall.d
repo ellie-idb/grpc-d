@@ -222,7 +222,7 @@ class RecvCloseOnServerOp : RemoteOp {
     }
     
     this() {
-        _cancelled = theAllocator.make!int(0);
+        _cancelled = theAllocator.make!int();
     }
     
     ~this() {  
