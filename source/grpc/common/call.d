@@ -91,7 +91,7 @@ struct CallDetails {
             grpc_call_details_init(details);
             obj._details = SharedResource(cast(shared)details, &release);
         } else {
-            throw new Exception("memory allocation failed");
+            assert(0, "memory allocation failed");
         }
 
         return obj;

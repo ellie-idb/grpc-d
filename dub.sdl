@@ -12,6 +12,11 @@ configuration "library" {
 	dflags "-dip25" "-dip1000"
 }
 
+configuration "gc" {
+    targetType "library"
+    dflags "-vgc"
+}
+
 configuration "asan" {
 	targetType "library"
 	dflags "-dip25" "-dip1000"

@@ -107,9 +107,7 @@ class CompletionQueue(string T)
         } else {
         }
 
-        if (cq == null) {
-            throw new Exception("CQ creation error");
-        }
+        assert(cq != null, "CQ creation error");
 
         static Exception release(shared(void)* ptr) @trusted nothrow {
             grpc_completion_queue_shutdown(cast(grpc_completion_queue*)ptr);

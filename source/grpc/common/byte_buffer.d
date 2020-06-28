@@ -98,7 +98,8 @@ class ByteBuffer {
 
         assert(obj.valid, "byte buffer was not valid");
         auto buf_2 = grpc_byte_buffer_copy(obj.unsafeHandle);
-        ByteBuffer ret = new ByteBuffer(buf_2);
+        ByteBuffer ret = theAllocator.make!ByteBuffer();
+        *(ret.handle) = buf_2;
         return ret;
     }
     
@@ -136,12 +137,11 @@ class ByteBuffer {
         }
         
         grpc_byte_buffer** buf = cast(grpc_byte_buffer**)gpr_zalloc((grpc_byte_buffer**).sizeof);
-        if (buf != null) {
-            _buf = SharedResource(cast(shared)buf, &release);
-            mutex = theAllocator.make!GPRMutex();
-        } else {
-            throw new Exception("malloc failed");
-        }
+        
+        assert(buf != null, "malloc failed");
+        
+        _buf = SharedResource(cast(shared)buf, &release);
+        mutex = theAllocator.make!GPRMutex();
     }
 
     this(ref ubyte[] _data) @trusted {

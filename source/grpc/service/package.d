@@ -58,8 +58,8 @@ class Service(T) : ServiceHandlerInterface {
         ulong workerIndex;
 
         void shutdown() {
-            atomicStore(_run, false);
             notificationCq.shutdown();
+            atomicStore(_run, false);
         }
 
     private:
@@ -67,7 +67,7 @@ class Service(T) : ServiceHandlerInterface {
         CompletionQueue!"Next" notificationCq;
         CompletionQueue!"Next" callCq;
         T _serviceInstance;
-        __gshared bool _run;
+        shared bool _run;
 
         void run() {
 
@@ -78,13 +78,11 @@ class Service(T) : ServiceHandlerInterface {
                As well, we generate our thread-local completion queues here (to avoid pitfalls with global CQs and queues),
                and register them with the server, then block while we wait for every thread to synchronize progress.
             */
+            import core.memory : GC;   
             import std.experimental.allocator.mallocator: Mallocator;
             import std.experimental.allocator : theAllocator, allocatorObject;
             
             theAllocator = allocatorObject(Mallocator.instance);
-            
-            import core.memory : GC;
-            GC.disable;
 
             _serviceInstance = theAllocator.make!T();
             notificationCq = theAllocator.make!(CompletionQueue!"Next")();
@@ -136,8 +134,8 @@ class Service(T) : ServiceHandlerInterface {
             // GC gets in the way (and leads to spurious segfaults)
             
 
-            _run = true;
-            while (_run) {
+            atomicStore(_run, true);
+            while (atomicLoad(_run)) {
                 auto item = notificationCq.next(10.seconds);
                 if (item.type == GRPC_OP_COMPLETE) {
                     DEBUG!"hello from task %d"(workerIndex);
@@ -149,7 +147,7 @@ class Service(T) : ServiceHandlerInterface {
                 } else if(item.type == GRPC_QUEUE_TIMEOUT) {
                     // collect while we're timed out
                     DEBUG!"timeout";
-                    GC.collect;
+                    //GC.collect;
                     continue;
                 }
 
@@ -203,9 +201,9 @@ class Service(T) : ServiceHandlerInterface {
                 }
             }
 
-            //theAllocator.dispose(callCq);
-            //theAllocator.dispose(notificationCq);
-            //theAllocator.dispose(_serviceInstance);
+            theAllocator.dispose(callCq);
+            theAllocator.dispose(notificationCq);
+            theAllocator.dispose(_serviceInstance);
         }
     }
     import std.typecons;
@@ -253,7 +251,7 @@ class Service(T) : ServiceHandlerInterface {
 
     int totalServiced() {
         return _totalServiced;
-    }
+    }         
 
     int totalQueued() {
         return _totalQueued;

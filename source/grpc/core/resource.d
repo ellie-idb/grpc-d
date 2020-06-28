@@ -6,10 +6,14 @@ struct SharedResource
 @safe:
     alias Exception function(shared(void)*) nothrow Release;
 
-    this(shared(void)* ptr, Release release) nothrow
+    this(shared(void)* ptr, Release release) @trusted
         in { assert(ptr); } body
     {
-        m_payload = new shared(Payload)(1, ptr, release);
+        auto p = theAllocator.make!(shared(Payload));
+        p.refCount = 1;
+        p.handle = ptr;
+        p.release = release;
+        m_payload = p;
     }
 
     this(this) nothrow
@@ -40,7 +44,10 @@ struct SharedResource
     void forceRelease() @system
     {
         if (m_payload) {
-            scope(exit) m_payload = null;
+            scope(exit) {
+                theAllocator.dispose(m_payload);
+                m_payload = null;
+            }
             decRefCount();
             if (m_payload.handle != null) {
                 scope(exit) m_payload.handle = null;
@@ -80,7 +87,13 @@ private:
         body
     {
         if (m_payload) {
-            scope(exit) m_payload = null;
+            scope(exit) {() {
+                try {
+                    theAllocator.dispose(m_payload);
+                } catch(Exception e) { assert(0); }
+                
+                m_payload = null;
+            }();}
             if (decRefCount() < 1 && m_payload.handle != null) {
                 return m_payload.release(m_payload.handle);
             }
