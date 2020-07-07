@@ -38,9 +38,11 @@ class ByteBuffer {
         lock;
         scope(exit) unlock;
         
-        assert(valid, "byte buffer was not valid");
-        
-        return grpc_byte_buffer_length(unsafeHandle);
+        if (!valid) {
+            return 0;
+        } else {
+            return grpc_byte_buffer_length(unsafeHandle);
+        }
     }
     
     void lock() {
@@ -149,8 +151,8 @@ class ByteBuffer {
         grpc_slice _dat = type_to_slice!(ubyte[])(_data);
         DEBUG!"sliced, creating new buf (%x)"(&_dat);
         grpc_byte_buffer* buf = grpc_raw_byte_buffer_create(&_dat, 1);
-        this(buf);
         grpc_slice_unref(_dat);
+        this(buf);
         DEBUG!"ok!";
     }
 

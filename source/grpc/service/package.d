@@ -329,8 +329,8 @@ class Service(T) : ServiceHandlerInterface {
                             scope(exit) _tag.ctx.mutex.unlock;
                             
                             DEBUG!"locked!";
-                            ServerReader!(input) reader = theAllocator.make!(ServerReader!(input))(queue);
-                            ServerWriter!(output) writer = theAllocator.make!(ServerWriter!(output))(queue);
+                            ServerReader!(input) reader = theAllocator.make!(ServerReader!(input))(_tag, queue);
+                            ServerWriter!(output) writer = theAllocator.make!(ServerWriter!(output))(_tag, queue);
 
                             /* results from our call */
                             Status stat;
@@ -340,33 +340,30 @@ class Service(T) : ServiceHandlerInterface {
                             static if(hasUDA!(val, ClientStreaming) == 0 && hasUDA!(val, ServerStreaming) == 0) {
                                 DEBUG!"func call: regular";
                                 DEBUG!"reading";
-                                funcIn = reader.readOne(_tag);
+                                funcIn = reader.readOne();
 
                                 DEBUG!"passing off to user";
                                 mixin("stat = instance." ~ __traits(identifier, val) ~ "(funcIn, funcOut);");
                                 DEBUG!"starting write";
-                                writer.start(_tag);
+                                writer.start();
                                 DEBUG!"writing";
-                                writer.write(_tag, funcOut);
+                                writer.write(funcOut);
                                 DEBUG!"done write";
-                                writer.finish(_tag, stat);
-                                // RecvCloseOnServerOp needs to be at the end, or we will
-                                // run into heap corruption (since we free every operation at the end)
-                                reader.finish(_tag);
-                            }
+                            }                                
                             else static if(hasUDA!(val, ClientStreaming) && hasUDA!(val, ServerStreaming)) {
-                                DEBUG("func call: bidi");
+                                DEBUG!"func call: bidi";
 
                                 mixin("stat = instance." ~ __traits(identifier, val) ~ "(reader, writer);");
                             }
                             else static if(hasUDA!(val, ClientStreaming)) {
-                                DEBUG("func call: client streaming");
+                                DEBUG!"func call: client streaming";
                                 mixin("stat = instance." ~ __traits(identifier, val) ~ "(reader, funcOut);");
                                 writer.start();
                                 writer.write(funcOut);
+
                             }   
                             else static if(hasUDA!(val, ServerStreaming)) {
-                                DEBUG("func call: server streaming");
+                                DEBUG!"func call: server streaming";
                                 funcIn = reader.readOne();
 
                                 writer.start();
@@ -375,6 +372,11 @@ class Service(T) : ServiceHandlerInterface {
 
                             DEBUG!"func call: writing with status %s"(stat);
                             DEBUG!"func call: done";
+                            writer.finish(stat);
+                            // RecvCloseOnServerOp needs to be at the end, or we will
+                            // run into heap corruption (since we free every operation at the end)
+                            reader.finish();
+
 
                            /*
                                 IMPORTANT:
@@ -455,7 +457,7 @@ class Service(T) : ServiceHandlerInterface {
         _serviceId = serviceId;
         threads = new ThreadGroup();
 
-        workingThreads = 8;
+        workingThreads = 1;
 
         with(funcType) { 
             _funcCount[NORMAL] = 0;

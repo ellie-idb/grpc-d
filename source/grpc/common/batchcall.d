@@ -156,7 +156,7 @@ class RecvInitialMetadataOp : RemoteOp {
 
 class RecvMessageOp : RemoteOp {
     private {
-        ByteBuffer* _buf;
+        ByteBuffer _buf;
     }
 
     grpc_op_type type() {
@@ -173,8 +173,8 @@ class RecvMessageOp : RemoteOp {
     void free() {
     }
     
-    this(ref ByteBuffer buf) {
-        _buf = &buf;
+    this(ByteBuffer buf) {
+        _buf = buf;
     }
     
     ~this() {

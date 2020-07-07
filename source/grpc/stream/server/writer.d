@@ -12,23 +12,36 @@ import std.experimental.allocator : theAllocator, make, dispose, makeArray;
 
 class ServerWriter(T) {
     private {
+        Tag* _tag;
         CompletionQueue!"Next" _cq;
         bool started = false;
+        bool _closed;
     }
 
-    bool start(Tag* tag) {
+    @property bool closed() {
+        return _closed;
+    }
+
+    bool start() {
         SendInitialMetadataOp op = theAllocator.make!SendInitialMetadataOp();
-        BatchCall.runSingleOp(op, _cq, tag);
+        BatchCall.runSingleOp(op, _cq, _tag);
         theAllocator.dispose(op);
         
         started = true;
+        _closed = false;
 
         return true;
     }
 
-    bool write(Tag* tag, T obj) {
+    bool write(T obj) {
         import std.array;
         import google.protobuf;
+
+        grpc_call_error err;
+
+        if (closed) {
+            return false;
+        }
         
         if(!started) {
             return false;
@@ -36,23 +49,28 @@ class ServerWriter(T) {
         ubyte[] _out = theAllocator.makeArray!ubyte(obj.toProtobuf.array);
         DEBUG!"running";
         SendMessageOp op = theAllocator.make!SendMessageOp(_out);
-        BatchCall.runSingleOp(op, _cq, tag);
+        err = BatchCall.runSingleOp(op, _cq, _tag);
         theAllocator.dispose(op);
         theAllocator.dispose(_out);
 
-        destroy(_out);
-        return true;
+        return err == GRPC_CALL_OK;
     }
 
-    bool finish(Tag* tag, ref Status _stat) {
+    bool finish(ref Status _stat) {
+        if (closed) {
+            return true;
+        }
+
         DEBUG!"finish called";
         SendStatusFromServerOp op = theAllocator.make!SendStatusFromServerOp();
-        BatchCall.runSingleOp(op, _cq, tag);
+        BatchCall.runSingleOp(op, _cq, _tag);
         theAllocator.dispose(op);
+        _closed = true;
         return true;
     }
 
-    this(CompletionQueue!"Next" cq) {
+    this(Tag* tag, CompletionQueue!"Next" cq) {
+        _tag = tag;
         _cq = cq;
     }
 

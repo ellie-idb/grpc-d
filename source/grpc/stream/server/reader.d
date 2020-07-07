@@ -11,16 +11,29 @@ import std.experimental.allocator : theAllocator, make, makeArray, dispose;
 
 class ServerReader(T) {
     private {
+        bool _closed;
+        Tag* _tag;
         CompletionQueue!"Next" _cq;
     }
+
     import grpc.common.byte_buffer;
     import google.protobuf;
 
-    auto readOne(Tag* _tag, Duration d = 10.seconds) {
+    @property bool closed() {
+        return _closed;
+    }
+
+    auto readOne(Duration d = 1.seconds) {
         assert(_tag != null, "tag shouldn't be null");
 
         T protobuf = T.init;
-        assert(_tag.ctx.data.valid, "byte buffer should always be valid");
+
+        if (!_tag.ctx.data.valid) {
+            RecvMessageOp op = theAllocator.make!(RecvMessageOp)(_tag.ctx.data);
+            BatchCall.runSingleOp(op, _cq, _tag, d);
+            theAllocator.dispose(op);
+        }
+
         ulong len = _tag.ctx.data.length;
         DEBUG!"bf.length: %d"(len);
         if(len != 0) {
@@ -32,11 +45,13 @@ class ServerReader(T) {
 
                 theAllocator.dispose(cast(ubyte*)ubytePtr);
             }
+
+            _tag.ctx.data.cleanup();
         }
         return protobuf;
     }
 
-
+    /*
     auto read(int count = 0)(Duration d = 10.seconds) {
         import std.concurrency;
         import std.stdio;
@@ -100,15 +115,18 @@ class ServerReader(T) {
 
         return r;
     }
+    */
 
-    void finish(Tag* tag) {
+    void finish() {
         DEBUG!"finishing";
         RecvCloseOnServerOp op = theAllocator.make!RecvCloseOnServerOp();
-        BatchCall.runSingleOp(op, _cq, tag);
+        BatchCall.runSingleOp(op, _cq, _tag);
         theAllocator.dispose(op);
+        _closed = true;
     }
 
-    this(CompletionQueue!"Next" cq) {
+    this(Tag* tag, CompletionQueue!"Next" cq) {
+        _tag = tag;
         import std.stdio;
         _cq = cq;
     }

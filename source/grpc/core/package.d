@@ -22,7 +22,7 @@ void init() {
 }
 
 void shutdown() {
-	grpc_shutdown();
+    grpc_shutdown_blocking();
 }
 
 string g_stands_for() {
