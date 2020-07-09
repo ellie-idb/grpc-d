@@ -11,7 +11,7 @@ import grpc.common.cq;
 import grpc.core.utils;
 import std.experimental.allocator : theAllocator, make, dispose;
 
-//should/can be overridden by clients
+// Every Service template class is guaranteed to at least implement these functions
 interface ServiceHandlerInterface {
     bool register(Server server);
     void stop();
@@ -22,6 +22,10 @@ interface ServiceHandlerInterface {
     int totalServiced();
 }
 
+// Since we dynamically generate the function handler through UDAs,
+// we need some way to get the type that it is expecting (be it, through a ServerReader/ServerWriter interface, or a POD type)
+// These two templates resolve that, and get us the type.
+
 mixin template Reader(T) {
     static if(is(TemplateOf!T == void)) {
         alias input = T;
@@ -31,7 +35,6 @@ mixin template Reader(T) {
     }
 
 }
-
 
 mixin template Writer(T) {
     static if(is(TemplateOf!T == void)) {
@@ -57,11 +60,6 @@ class Service(T) : ServiceHandlerInterface {
         ServiceHandlerType[] handlers;
         ulong workerIndex;
 
-        void shutdown() {
-            notificationCq.shutdown();
-            atomicStore(_run, false);
-        }
-
     private:
         /* Thread local things */
         CompletionQueue!"Next" notificationCq;
@@ -77,6 +75,8 @@ class Service(T) : ServiceHandlerInterface {
                a servicerInstance, where we send requests to. (DO NOT EXPECT a global instance to exist)
                As well, we generate our thread-local completion queues here (to avoid pitfalls with global CQs and queues),
                and register them with the server, then block while we wait for every thread to synchronize progress.
+
+               As well, we ALSO register a custom allocator (so we can avoid using the GC)
             */
             import core.memory : GC;   
             import std.experimental.allocator.mallocator: Mallocator;
@@ -89,10 +89,13 @@ class Service(T) : ServiceHandlerInterface {
             callCq = theAllocator.make!(CompletionQueue!"Next")();
 
             DEBUG!"registering (thread: %d)"(workerIndex);
+            // This allows us to receive notifications of calls of ANY kind (but we only listen for the calls specified in the service definition)
             _server.registerQueue(notificationCq);
             DEBUG!"registered (thread: %d)"(workerIndex);
             atomicOp!"+="(threadInitDone, 1);
 
+            // Block while the rest of the threads spool up, and wait for the server to signal
+            // that it has started, and it is safe to request calls on our CQ
             while (!atomicLoad(threadOk)) {
                 Thread.sleep(1.msecs);
             }
@@ -137,6 +140,8 @@ class Service(T) : ServiceHandlerInterface {
             atomicStore(_run, true);
             while (atomicLoad(_run)) {
                 auto item = notificationCq.next(10.seconds);
+                notificationCq.lock();
+                scope(exit) notificationCq.unlock();
                 if (item.type == GRPC_OP_COMPLETE) {
                     DEBUG!"hello from task %d"(workerIndex);
                     DEBUG!"hit something";
@@ -145,10 +150,14 @@ class Service(T) : ServiceHandlerInterface {
                     _run = false;
                     continue;
                 } else if(item.type == GRPC_QUEUE_TIMEOUT) {
-                    // collect while we're timed out
                     DEBUG!"timeout";
-                    //GC.collect;
                     continue;
+                }
+
+                if (notificationCq.inShutdownPath) {
+                    DEBUG!"we are in shutdown path";
+                    _run = false;
+                    break;
                 }
 
                 DEBUG!"grabbing tag";
@@ -179,19 +188,11 @@ class Service(T) : ServiceHandlerInterface {
                 try { 
                     handlers[tag.metadata[4]](callCq, _serviceInstance, tag);
                 } catch(Exception e) {
-                    import grpc.common.batchcall;
-                    import interop.headers;
+                    ERROR!"SHOULD NEVER HAPPEN XXX";
                     ERROR!"CAUGHT EXCEPTION: %s"(e.msg);
                     ERROR!"FILE: %s:%d"(e.file, e.line);
                     ERROR!"BACKTRACE: %s"(e.info);
-
-                    // if it threw, we need to send that data back to the client (or else they're continually waiting for a response)
-
-                    BatchCall call = new BatchCall();
-                    call.addOp(theAllocator.make!RecvCloseOnServerOp());
-                    call.addOp(theAllocator.make!SendInitialMetadataOp());
-                    call.addOp(theAllocator.make!SendStatusFromServerOp(GRPC_STATUS_INTERNAL, e.msg));
-                    call.run(callCq, tag);
+                    assert(0);
                 }
 
                 // make sure we can live to service another call!
@@ -262,11 +263,7 @@ class Service(T) : ServiceHandlerInterface {
     }
     
     void stop() {
-        foreach(thread; _threads) {
-            INFO!"shutting down thread!";
-            thread.shutdown();
-        }
-
+        // block while every thread terminates
         threads.joinAll();
     }
 
@@ -314,11 +311,16 @@ class Service(T) : ServiceHandlerInterface {
                 DEBUG!"call: %x"(rpcTag.ctx.call);
                 DEBUG!"adding tag to global";
                 with(funcType) { 
+                    // Why 0xDE? Well, *just* in case the Tag is corrupted,
+                    // it should allow us to immediately ignore it
                     rpcTag.metadata[0] = 0xDE;
                     rpcTag.metadata[1] = cast(ubyte)_funcCount[NORMAL];
                     rpcTag.metadata[2] = cast(ubyte)_serviceId;
                     rpcTag.metadata[4] = cast(ubyte)i;
                     _handlers ~= (CompletionQueue!"Next" queue, T instance, Tag* _tag) {
+                            import core.exception;
+                            import core.time;
+                            Exception thrownException = null;
                             DEBUG!"hello";
                             DEBUG!"grabbing mutex lock";
                             if (_tag == null) {
@@ -328,6 +330,8 @@ class Service(T) : ServiceHandlerInterface {
                             _tag.ctx.mutex.lock;
                             scope(exit) _tag.ctx.mutex.unlock;
                             
+                            _tag.ctx.timestamp = MonoTime.currTime;
+
                             DEBUG!"locked!";
                             ServerReader!(input) reader = theAllocator.make!(ServerReader!(input))(_tag, queue);
                             ServerWriter!(output) writer = theAllocator.make!(ServerWriter!(output))(_tag, queue);
@@ -337,39 +341,57 @@ class Service(T) : ServiceHandlerInterface {
                             input funcIn;
                             output funcOut;
                             DEBUG!"func call: %s"(remoteName);
-                            static if(hasUDA!(val, ClientStreaming) == 0 && hasUDA!(val, ServerStreaming) == 0) {
-                                DEBUG!"func call: regular";
-                                DEBUG!"reading";
-                                funcIn = reader.readOne();
+                            try {
+                                static if(hasUDA!(val, ClientStreaming) == 0 && hasUDA!(val, ServerStreaming) == 0) {
+                                    DEBUG!"func call: regular";
+                                    DEBUG!"reading";
+                                    funcIn = reader.readOne();
 
-                                DEBUG!"passing off to user";
-                                mixin("stat = instance." ~ __traits(identifier, val) ~ "(funcIn, funcOut);");
-                                DEBUG!"starting write";
-                                writer.start();
-                                DEBUG!"writing";
-                                writer.write(funcOut);
-                                DEBUG!"done write";
-                            }                                
-                            else static if(hasUDA!(val, ClientStreaming) && hasUDA!(val, ServerStreaming)) {
-                                DEBUG!"func call: bidi";
+                                    DEBUG!"passing off to user";
+                                    mixin("stat = instance." ~ __traits(identifier, val) ~ "(funcIn, funcOut);");
+                                    DEBUG!"starting write";
+                                    writer.start();
+                                    DEBUG!"writing";
+                                    writer.write(funcOut);
+                                    DEBUG!"done write";
+                                }                                
+                                else static if(hasUDA!(val, ClientStreaming) && hasUDA!(val, ServerStreaming)) {
+                                    DEBUG!"func call: bidi";
 
-                                mixin("stat = instance." ~ __traits(identifier, val) ~ "(reader, writer);");
+                                    mixin("stat = instance." ~ __traits(identifier, val) ~ "(reader, writer);");
+                                }
+                                else static if(hasUDA!(val, ClientStreaming)) {
+                                    DEBUG!"func call: client streaming";
+                                    mixin("stat = instance." ~ __traits(identifier, val) ~ "(reader, funcOut);");
+                                    writer.start();
+                                    writer.write(funcOut);
+
+                                }   
+                                else static if(hasUDA!(val, ServerStreaming)) {
+                                    DEBUG!"func call: server streaming";
+                                    funcIn = reader.readOne();
+
+                                    writer.start();
+                                    mixin("stat = instance." ~ __traits(identifier, val) ~ "(funcIn, writer);");
+                                }
+                            } catch (Exception e) {
+                                DEBUG!"caught an exception somewhere in the flow";
+                                thrownException = e;
                             }
-                            else static if(hasUDA!(val, ClientStreaming)) {
-                                DEBUG!"func call: client streaming";
-                                mixin("stat = instance." ~ __traits(identifier, val) ~ "(reader, funcOut);");
-                                writer.start();
-                                writer.write(funcOut);
 
-                            }   
-                            else static if(hasUDA!(val, ServerStreaming)) {
-                                DEBUG!"func call: server streaming";
-                                funcIn = reader.readOne();
-
-                                writer.start();
-                                mixin("stat = instance." ~ __traits(identifier, val) ~ "(funcIn, writer);");
+                            /* exception handling code */
+                            /* throwing an exception DOES mean that some objects may leak */
+                            if (thrownException !is null) {
+                                import grpc.common.batchcall;
+                                // try to flush the execution context if something threw
+                                // not guaranteed to work
+                                // basically an edge case to ensure that if an in-progress batch call failed, we drop it
+                                grpc_call_cancel(*_tag.ctx.call, null);
+                                
+                                // update the status of the call
+                                stat.code = GRPC_STATUS_INTERNAL;
+                                stat.message = thrownException.msg;
                             }
-
                             DEBUG!"func call: writing with status %s"(stat);
                             DEBUG!"func call: done";
                             writer.finish(stat);
@@ -377,30 +399,27 @@ class Service(T) : ServiceHandlerInterface {
                             // run into heap corruption (since we free every operation at the end)
                             reader.finish();
 
-
                            /*
                                 IMPORTANT:
                                 As we are now done with the call,
                                 we have to unref it, so that the call is freed,
                                 as well as any memory allocated in the call arena.
-                                
-                                As well, to avoid collections as best as we can, we
-                                explicitly destroy the reader/writer here, to free up
-                                used memory.
                             */
-                            // As well, free the byte buffer's memory
-                            //DEBUG!"metadata: cap %d count %d"(_tag.ctx.metadata.capacity, _tag.ctx.metadata.count);
+
                             theAllocator.dispose(reader);
                             theAllocator.dispose(writer);
 
-                            grpc_call_unref(*_tag.ctx.call);
-                            *_tag.ctx.call = null;
-
+                            // Even though this may be allocated in the call arena,
+                            // we still want to free it (just to be safe)
                             _tag.ctx.metadata.cleanup;
                             
+                            // As well, free the byte buffer's memory (even IF it is in the call arena)
                             if (_tag.ctx.data.valid) {
                                 _tag.ctx.data.cleanup;
                             }
+
+                            grpc_call_unref(*_tag.ctx.call);
+                            *_tag.ctx.call = null;
                      };
 
                     static if(hasUDA!(val, ClientStreaming) && hasUDA!(val, ServerStreaming)) {
@@ -431,11 +450,15 @@ class Service(T) : ServiceHandlerInterface {
             }
         }
 
+        /* Fork and spawn new threads for each worker */
+
         for (ulong i = 0; i < workingThreads; i++) {
             auto t = new ServicerThread();
             t.handlers = _handlers;
             t.workerIndex = i;
+            // We *should* block for this thread to stop execution at the end
             t.isDaemon = false;
+            // Duplicate the tag cache (but this WILL be duplicated once again to ensure thread-locality)
             t.tags = tags;
             t.start();
 
@@ -457,6 +480,7 @@ class Service(T) : ServiceHandlerInterface {
         _serviceId = serviceId;
         threads = new ThreadGroup();
 
+        // TODO: make this user-specifiable
         workingThreads = 1;
 
         with(funcType) { 

@@ -239,21 +239,54 @@ class BatchCall {
         import std.algorithm.mutation;
         ops ~= _op;
     }
+
+    static grpc_call_error kick(CompletionQueue!"Next" cq, Tag* _tag, Duration d = 1.seconds) {
+        assert(*_tag.ctx.call, "call should never be null");
+        DEBUG!"kicking cq with tag (%x)"(_tag);
+        auto status = grpc_call_start_batch(*_tag.ctx.call, null, 0, _tag, null);
+        if (status == GRPC_CALL_OK) {
+            import core.time;
+            cq.next(d);
+        }
+        return status;
+    }
     
     static grpc_call_error runSingleOp(RemoteOp _op, CompletionQueue!"Next" cq, Tag* _tag, Duration d = 1.seconds) {
         assert(*_tag.ctx.call, "call should never be null");
     
+        if (callOverDeadline(_tag)) {
+            DEBUG!"call exceeded deadline (initial check)";
+            return GRPC_CALL_ERROR;
+        }
+
         grpc_op[1] op;
         op[0] = _op.value();
         DEBUG!"starting batch on tag (%x, ops: %d)"(_tag, 1);
-        auto status = grpc_call_start_batch(*_tag.ctx.call, op.ptr, 1, _tag, null);  
-        if(status == GRPC_CALL_OK) {
-            import core.time;
-            cq.next(d);
+        grpc_call_error status = grpc_call_start_batch(*_tag.ctx.call, op.ptr, 1, _tag, null);  
+        grpc_event evt = cq.next(d); 
+        while (evt.type != GRPC_OP_COMPLETE) {
+            if (callOverDeadline(_tag)) {
+                DEBUG!"call exceeded deadline, cancel batch";
+                grpc_call_cancel(*_tag.ctx.call, null);
+                break;
+            }
+
+            if (evt.type == GRPC_QUEUE_SHUTDOWN) {
+                break;
+            }
+
+            if (status == GRPC_CALL_OK) {
+                DEBUG!"waiting for op to complete";
+            } else if (status == GRPC_CALL_ERROR_TOO_MANY_OPERATIONS) {
+                grpc_call_cancel(*_tag.ctx.call, null);
+                break;
+            } else {
+                ERROR!"STATUS: %s"(status);
+                break;
+            }
+            evt = cq.next(d);
             DEBUG!"finished batch on tag: %x"(_tag);
-        } else {
-            ERROR!"STATUS: %s"(status);
-        }
+       }
 
         destroy(op);
         return status;
@@ -267,10 +300,16 @@ class BatchCall {
     // For tuning, you may assume that changing the duration MAY be optimal, however
     // if you reduce the duration down to 1 millisecond, if there is ever a collection cycle,
     // the library can't adequately catch the event (and may result in odd cancellations)
-    
+
     grpc_call_error run(CompletionQueue!"Next" cq, Tag* _tag, Duration d = 1.seconds) { 
         //assert(sanityCheck(), "failed sanity check");
         assert(_tag != null, "tag should never be null");
+
+        if (callOverDeadline(_tag)) {
+            DEBUG!"call over deadline, refusing to process";
+            return GRPC_CALL_ERROR;
+        }
+
         Vector!(grpc_op) _ops;
 
         foreach(op; ops) {
@@ -278,14 +317,32 @@ class BatchCall {
         }
 
         DEBUG!"starting batch on tag (%x, ops: %d)"(_tag, _ops.length);
-        auto status = grpc_call_start_batch(*_tag.ctx.call, _ops.ptr, _ops.length, _tag, null);  
-        if(status == GRPC_CALL_OK) {
+        grpc_call_error status = grpc_call_start_batch(*_tag.ctx.call, _ops.ptr, _ops.length, _tag, null);  
+        grpc_event evt = cq.next(d); 
+        while (evt.type != GRPC_OP_COMPLETE) {
             import core.time;
-            cq.next(d);
+            if (callOverDeadline(_tag)) {
+                DEBUG!"call over deadline";
+                grpc_call_cancel(*_tag.ctx.call, null);
+                break;
+            }
+
+            if (evt.type == GRPC_QUEUE_SHUTDOWN) {
+                break;
+            }
+
+            if (status == GRPC_CALL_OK) {
+                DEBUG!"waiting for op to complete";
+            } else if (status == GRPC_CALL_ERROR_TOO_MANY_OPERATIONS) {
+                grpc_call_cancel(*_tag.ctx.call, null);
+                break;
+            } else {
+                ERROR!"STATUS: %s"(status);
+                break;
+            }
+            evt = cq.next(d);
             DEBUG!"finished batch on tag: %x"(_tag);
-        } else {
-            ERROR!"STATUS: %s"(status);
-        }
+       }
         
         reset;
 
@@ -299,6 +356,8 @@ class BatchCall {
             
             Object obj = cast(Object)ops[i];
             auto type = typeid(obj);
+            // Workaround compiler bug where classinfo fails to retrieve the actual type 
+            // of an object (and the subsequent size of it)
             static foreach(sym; __traits(allMembers, mixin(__MODULE__))) {{
                 static if(sym[$ - 2 .. $] == "Op" && sym != "RemoteOp") {
                     pragma(msg, sym);

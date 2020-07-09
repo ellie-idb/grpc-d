@@ -29,6 +29,7 @@ class ServerReader(T) {
         T protobuf = T.init;
 
         if (!_tag.ctx.data.valid) {
+            DEBUG!"ctx data is invalid, asking for a new message";
             RecvMessageOp op = theAllocator.make!(RecvMessageOp)(_tag.ctx.data);
             BatchCall.runSingleOp(op, _cq, _tag, d);
             theAllocator.dispose(op);

@@ -17,9 +17,7 @@ if(__traits(isPOD, T) && __traits(compiles, cast(T)[0x01, 0x02])) {
         DEBUG!"data size: %d"(data.length);
         return cast(T)data;
     }
-
     return null;
-    
 }
 
 string byte_buffer_to_string(grpc_byte_buffer* bytebuf) {
@@ -49,22 +47,13 @@ grpc_slice type_to_slice(T)(T type) {
     return slice;
 }
     
-gpr_timespec durtotimespec(Duration time) nothrow {
-    gpr_timespec t;
-    t.clock_type = GPR_CLOCK_MONOTONIC; 
-    MonoTime curr = MonoTime.currTime;
-    auto _time = curr + time;
-    import std.stdio;
-
-    auto nsecs = ticksToNSecs(_time.ticks).nsecs;
-
-    nsecs.split!("seconds", "nsecs")(t.tv_sec, t.tv_nsec);
-    
+gpr_timespec durtotimespec(Duration time) {
+    gpr_timespec t = gpr_time_from_nanos(time.split!"nsecs"().nsecs, GPR_TIMESPAN);
     return t;
 }
 
-Duration timespectodur(gpr_timespec time) nothrow {
-    return time.tv_sec.seconds + time.tv_nsec.nsecs;
+Duration timespectodur(gpr_timespec time) {
+    return gpr_time_to_millis(gpr_time_sub(time, gpr_now(time.clock_type))).msecs; 
 }
 
 import core.memory : GC;
@@ -79,3 +68,20 @@ void okToMoveObject(void* ptr) @trusted nothrow {
     GC.clrAttr(cast(void*)ptr, GC.BlkAttr.NO_MOVE);
     GC.removeRange(ptr);
 }
+
+import grpc.core.tag : Tag;
+bool callOverDeadline(Tag* _tag) {
+    if (_tag.ctx.details.deadline == -1.seconds) {
+        DEBUG!"call has NO deadline";
+        return false;
+    } else {
+        DEBUG!"%s vs %s"(MonoTime.currTime - _tag.ctx.timestamp, _tag.ctx.details.deadline);
+    }
+
+    if (MonoTime.currTime - _tag.ctx.timestamp > _tag.ctx.details.deadline) {
+        DEBUG!"reached deadline, cannot go further";
+        return true;
+    }
+    return false;
+}
+

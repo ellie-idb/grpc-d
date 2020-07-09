@@ -11,6 +11,7 @@ import core.memory : GC;
 
 struct CallContext {
 @safe:
+    MonoTime timestamp;
     GPRMutex mutex;
     grpc_call** call;
     CallDetails details;
@@ -19,6 +20,7 @@ struct CallContext {
 
     static CallContext opCall() @trusted {
         CallContext obj;
+        obj.timestamp = MonoTime.init;
         obj.mutex = theAllocator.make!GPRMutex();
         obj.details = CallDetails();
         obj.metadata = theAllocator.make!MetadataArray();
@@ -31,6 +33,7 @@ struct CallContext {
     ~this() @trusted {
         gpr_free(cast(void*)call);
         destroy(details);
+        destroy(timestamp);
         theAllocator.dispose(metadata);
         theAllocator.dispose(data);
         theAllocator.dispose(mutex);

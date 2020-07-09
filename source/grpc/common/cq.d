@@ -27,6 +27,16 @@ class CompletionQueue(string T)
     private { 
         GPRMutex mutex;
         SharedResource _cq;
+        bool _inShutdownPath;
+    }
+
+    @property bool inShutdownPath() {
+        return _inShutdownPath;
+    }
+
+    @property bool inShutdownPath(bool val) {
+        _inShutdownPath = val;
+        return val;
     }
 
     @property inout(grpc_completion_queue)* handle() inout @trusted pure nothrow {
@@ -36,6 +46,14 @@ class CompletionQueue(string T)
     /* Preserved for compatibility */
     auto ptr(string file = __FILE__) @trusted {
         return handle;
+    }
+
+    void lock() {
+        mutex.lock;
+    }
+
+    void unlock() {
+        mutex.unlock;
     }
 
     static if(T == "Pluck") {
@@ -127,8 +145,6 @@ class CompletionQueue(string T)
     }
 
     void shutdown() @trusted {
-        mutex.lock;
-        scope(exit) mutex.unlock;
         grpc_completion_queue_shutdown(handle);
         INFO!"shutting down CQ";
     }

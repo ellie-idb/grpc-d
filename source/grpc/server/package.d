@@ -16,10 +16,23 @@ class Server
     private {
         GPRMutex mutex;
         SharedResource _server;
+        CompletionQueue!"Next"[] _registeredCqs;
         ServiceHandlerInterface[string] services;
         bool started;
-        bool shutdownPath;
         shared bool _run;
+
+        void handleShutdown() {
+            grpc_server_cancel_all_calls(handle);
+            foreach(cq; _registeredCqs) {
+                cq.lock();
+                cq.inShutdownPath(true);
+                cq.unlock();
+
+                grpc_server_shutdown_and_notify(handle, cq.handle, null);
+            }
+        }
+
+
     }
     
     @property inout(grpc_server)* handle() inout @trusted pure nothrow {
@@ -54,6 +67,7 @@ class Server
     void registerQueue(ref CompletionQueue!"Next" queue) {
         lock;
         scope(exit) unlock;
+        _registeredCqs ~= queue;
         grpc_server_register_completion_queue(handle, queue.handle, null); 
     }
 
@@ -72,9 +86,7 @@ class Server
             Thread.sleep(1.seconds);
         }
 
-        foreach(service; services) {
-            service.stop();
-        }
+        handleShutdown();
     }
 
     // this is expected to be called from an ISR (interrupt service routine, Ctrl+C whatever)

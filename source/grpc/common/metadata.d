@@ -80,9 +80,7 @@ class MetadataArray {
         if(mt != null) {
             grpcwrap_metadata_array_init(mt, 1);
             _meta = SharedResource(cast(shared)mt, &release);
-            DEBUG!"made the stupid shared resource";
             mutex = theAllocator.make!GPRMutex();
-            DEBUG!"hello!";
         } else {
             assert(0, "malloc error");
         }
