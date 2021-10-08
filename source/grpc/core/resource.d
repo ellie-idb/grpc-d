@@ -69,7 +69,19 @@ struct SharedResource
         }
     }
 
-    inout(void)* handle() inout @trusted nothrow
+    inout(void)* handle() inout @trusted nothrow shared
+    {
+        mu.lock;
+        scope(exit) mu.unlock;
+
+        if (m_payload != shared(Payload).init) {
+            return cast(typeof(return)) m_payload.handle;
+        } else {
+            return null;
+        }
+    }
+
+    inout(void)* handle() inout @trusted nothrow 
     {
         mu.lock;
         scope(exit) mu.unlock;

@@ -31,13 +31,17 @@ class CompletionQueue(string T)
         bool _inShutdownPath;
     }
 
-    @property bool inShutdownPath() {
+    bool inShutdownPath() shared {
         return _inShutdownPath;
     }
 
-    @property bool inShutdownPath(bool val) {
+    bool inShutdownPath(bool val) shared {
         _inShutdownPath = val;
         return val;
+    }
+
+    inout(grpc_completion_queue)* handle() inout @trusted nothrow shared {
+        return cast(typeof(return)) _cq.handle;
     }
 
     inout(grpc_completion_queue)* handle() inout @trusted nothrow {
@@ -53,14 +57,29 @@ class CompletionQueue(string T)
         mutex.lock;
     }
 
-    void unlock() {
+    void lock() shared {
+        mutex.lock;
+    }
+
+    void unlock() shared {
         mutex.unlock;
     }
 
+    void unlock() {
+        mutex.unlock;
+    }
+    
     static if(T == "Pluck") {
         // TODO: add Pluck/Callback types
     }
     static if(T == "Next") {
+        grpc_event next(Duration time) @trusted shared {
+            gpr_timespec t = durtotimespec(time);
+            grpc_event _evt = grpc_completion_queue_next(handle, t, null);
+
+            return _evt;
+        }
+
         grpc_event next(Duration time) @trusted {
             gpr_timespec t = durtotimespec(time);
             grpc_event _evt = grpc_completion_queue_next(handle, t, null);
@@ -71,7 +90,7 @@ class CompletionQueue(string T)
 
     import grpc.server;
 
-    grpc_call_error requestCall(void* method, Tag* tag, Server _server, CompletionQueue!"Next" boundToCall) @trusted {
+    grpc_call_error requestCall(void* method, Tag* tag, shared(Server) _server, shared(CompletionQueue!"Next") boundToCall) @trusted {
         assert(tag != null, "tag null");
         DEBUG!"hmm"();
 

@@ -17,7 +17,7 @@ class Server
     private {
         shared(Mutex) mutex;
         SharedResource _server;
-        CompletionQueue!"Next"[] _registeredCqs;
+        shared(CompletionQueue!"Next")[] _registeredCqs;
         ServiceHandlerInterface[string] services;
         bool started;
         shared bool _run;
@@ -34,15 +34,27 @@ class Server
         }
     }
     
+    inout(grpc_server)* handle() inout @trusted nothrow shared {
+        return cast(typeof(return)) _server.handle;
+    }
+
     inout(grpc_server)* handle() inout @trusted nothrow {
         return cast(typeof(return)) _server.handle;
     }
-    
-    void lock() {
+
+    void lock() shared {
+        mutex.lock;
+    }
+
+    void lock()  {
         mutex.lock;
     }
     
-    void unlock() {
+    void unlock() shared {
+        mutex.unlock;
+    }
+
+    void unlock()  {
         mutex.unlock;
     }
 
@@ -63,7 +75,7 @@ class Server
         return false;
     }
 
-    void registerQueue(ref CompletionQueue!"Next" queue) {
+    void registerQueue(shared(CompletionQueue!"Next") queue) shared {
         lock;
         scope(exit) unlock;
         _registeredCqs ~= queue;
@@ -77,11 +89,13 @@ class Server
         }
 
         while (atomicLoad(_run)) {
+            
             foreach(service; services) {
                 if (service.runners == 0) {
                     ERROR!"service is DEAD!";
                 }
             }
+
             Thread.sleep(1.seconds);
         }
 

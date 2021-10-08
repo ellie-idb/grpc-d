@@ -10,7 +10,7 @@ import core.atomic;
 import automem;
 import std.experimental.allocator : theAllocator, make, dispose, makeArray;
 
-class ServerWriter(T) {
+struct ServerWriter(T) {
     private {
         Tag* _tag;
         CompletionQueue!"Next" _cq;
@@ -73,6 +73,9 @@ class ServerWriter(T) {
         _tag = tag;
         _cq = cq;
     }
+
+    @disable this();
+    @disable this(this);
 
     ~this() {
     }

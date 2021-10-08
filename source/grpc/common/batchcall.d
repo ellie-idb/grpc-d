@@ -170,7 +170,7 @@ class RecvStatusOnClientOp : RemoteOp {
 
 class RecvCloseOnServerOp : RemoteOp {
     private {
-        __gshared int _cancelled;
+        shared(int) _cancelled;
     }
 
     int cancelled() {
@@ -184,7 +184,7 @@ class RecvCloseOnServerOp : RemoteOp {
     grpc_op value() {
         grpc_op ret;
         ret.op = type();
-        ret.data.recv_close_on_server.cancelled = &_cancelled;
+        ret.data.recv_close_on_server.cancelled = cast(int*)&_cancelled;
 
         return ret;
     }
