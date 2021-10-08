@@ -1,67 +1,81 @@
 module grpc.core.resource;
-public import std.experimental.allocator : theAllocator, make, dispose;
+import core.lifetime;
+import interop.headers;
+import grpc.core.sync.mutex;
+import core.atomic : atomicOp;
 
 struct SharedResource
 {
-@safe:
-    alias Exception function(shared(void)*) nothrow Release;
+@safe @nogc:
+    alias bool function(shared(void)*) nothrow Release;
+    static immutable ReleaseException = new Exception("Failed to release resource");
 
     this(shared(void)* ptr, Release release) @trusted
-        in { assert(ptr); } body
     {
-        auto p = theAllocator.make!(shared(Payload));
-        p.refCount = 1;
-        p.handle = ptr;
-        p.release = release;
-        m_payload = p;
+        assert(ptr);
+        m_payload.refCount = 1;
+        m_payload.handle = ptr;
+        m_payload.release = release;
+        mu = cast(shared)Mutex.create();
     }
 
-    this(this) nothrow
+    this(this) @trusted 
     {
-        if (m_payload) {
+        if (m_payload != shared(Payload).init) {
             incRefCount();
         }
     }
 
-    ~this() nothrow
+    ~this()
     {
-        nothrowDetach();
+        detach();
     }
 
-    void opAssign(SharedResource rhs)
+    void opAssign(SharedResource rhs) @trusted
     {
         detach();
         m_payload = rhs.m_payload;
-        rhs.m_payload = null;
-
+        rhs.m_payload = Payload.init;
     }
 
-    void detach()
+    bool detach() @trusted
     {
-        if (auto ex = nothrowDetach()) throw ex;
-    }
-
-    void forceRelease() @system
-    {
-        if (m_payload) {
+        if (m_payload != shared(Payload).init) {
             scope(exit) {
-                theAllocator.dispose(m_payload);
-                m_payload = null;
+                m_payload = shared(Payload).init;
             }
+            
+            if (decRefCount() < 1 && m_payload.handle != null) {
+                return m_payload.release(m_payload.handle);
+            }
+        }
+        return false;
+    }
+
+    void forceRelease() @trusted
+    {
+        if (m_payload != shared(Payload).init) {
+            scope(exit) {
+                m_payload = shared(Payload).init;
+            }
+
             decRefCount();
             if (m_payload.handle != null) {
                 scope(exit) m_payload.handle = null;
-                if (auto ex = m_payload.release(m_payload.handle)) {
-                    throw ex;
+                if (!m_payload.release(m_payload.handle)) {
+                    throw ReleaseException;
                 }
             }
         }
     }
 
-    @property inout(shared(void))* handle() inout pure nothrow
+    inout(void)* handle() inout @trusted nothrow
     {
-        if (m_payload) {
-            return m_payload.handle;
+        mu.lock;
+        scope(exit) mu.unlock;
+
+        if (m_payload != shared(Payload).init) {
+            return cast(typeof(return)) m_payload.handle;
         } else {
             return null;
         }
@@ -70,35 +84,14 @@ struct SharedResource
 private:
     void incRefCount() @trusted nothrow
     {
-        assert (m_payload !is null && m_payload.refCount > 0);
-        import core.atomic: atomicOp;
+        assert (m_payload != shared(Payload).init && m_payload.refCount > 0);
         atomicOp!"+="(m_payload.refCount, 1);
     }
 
     int decRefCount() @trusted nothrow
     {
-        assert (m_payload !is null && m_payload.refCount > 0);
-        import core.atomic: atomicOp;
+        assert (m_payload != shared(Payload).init && m_payload.refCount > 0);
         return atomicOp!"-="(m_payload.refCount, 1);
-    }
-
-    Exception nothrowDetach() @trusted nothrow
-        out { assert (m_payload is null); }
-        body
-    {
-        if (m_payload) {
-            scope(exit) {() {
-                try {
-                    theAllocator.dispose(m_payload);
-                } catch(Exception e) { assert(0); }
-                
-                m_payload = null;
-            }();}
-            if (decRefCount() < 1 && m_payload.handle != null) {
-                return m_payload.release(m_payload.handle);
-            }
-        }
-        return null;
     }
 
     struct Payload
@@ -107,11 +100,14 @@ private:
         void* handle;
         Release release;
     }
-    shared(Payload)* m_payload;
+    shared(Mutex) mu;
+    shared(Payload) m_payload;
 
     invariant()
     {
-        assert (m_payload is null ||
-            (m_payload.refCount > 0 && m_payload.release !is null));
+        () @trusted {
+            assert (m_payload == shared(Payload).init ||
+                (m_payload.refCount > 0 && m_payload.release !is null), "failed invariant");
+        } ();
     }
 }

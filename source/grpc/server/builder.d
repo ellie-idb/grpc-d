@@ -1,6 +1,7 @@
 module grpc.server.builder;
 import interop.headers;
 import grpc.server;
+import core.lifetime;
 
 class ServerBuilder {
     private {
@@ -27,24 +28,31 @@ class ServerBuilder {
         _server.registerService!T();
     }
 
-    Server* build() {
-        grpc_channel_args args;
-        args.num_args = 1;
+    Server build() {
+        auto mem = gpr_zalloc(__traits(classInstanceSize, Server));
+        Server srv = cast(Server)mem;
+        if (mem != null) {
+            grpc_channel_args args;
+            args.num_args = 1;
 
-        grpc_arg[] _a;
-        grpc_arg arg;
-        import std.string;
-        arg.type = GRPC_ARG_INTEGER;
-        arg.key = cast(char*)("grpc.server_handshake_timeout_ms".toStringz);
-        arg.value.integer = 1000;
-        _a ~= arg;
+            grpc_arg[] _a;
+            grpc_arg arg;
+            import std.string;
+            arg.type = GRPC_ARG_INTEGER;
+            arg.key = cast(char*)("grpc.server_handshake_timeout_ms".toStringz);
+            arg.value.integer = 1000;
+            _a ~= arg;
 
-        args.args = _a.ptr; 
-        _server = Server(args);
+            args.args = _a.ptr; 
+            emplace!Server(srv, args);
 
-        _server.bind("0.0.0.0", 50051);
+            srv.bind("0.0.0.0", 50051);
+        }
+        else {
+            assert(0, "Allocation failed");
+        }
 
-        return &_server;
+        return srv;
     }
 
 

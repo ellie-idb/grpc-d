@@ -22,10 +22,12 @@ void INFO(string format, string file = __MODULE__, int line = __LINE__, A...)(la
 }
 
 void DEBUG(string format, string file = __MODULE__, int line = __LINE__, A...)(lazy A args) @trusted {
-    if (gLogger.__minVerbosity <= Verbosity.Debug) {
-        auto msg = appender!string;
-        formattedWrite(msg, format, args);
-        gLogger.log(Verbosity.Debug, msg.data, file, line);
+    debug {
+        if (gLogger.__minVerbosity <= Verbosity.Debug) {
+            auto msg = appender!string;
+            formattedWrite(msg, format, args);
+            gLogger.log(Verbosity.Debug, msg.data, file, line);
+        }
     }
 }
 

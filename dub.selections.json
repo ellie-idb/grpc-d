@@ -1,11 +1,11 @@
 {
 	"fileVersion": 1,
 	"versions": {
-		"automem": "0.6.2",
-		"grpc-d-interop": "~master",
+		"automem": "0.6.7",
+		"grpc-d-interop": "0.0.1",
 		"memutils": "1.0.4",
 		"protobuf": "0.6.2",
-		"test_allocator": "0.3.2",
-		"unit-threaded": "1.0.4"
+		"test_allocator": "0.3.3",
+		"unit-threaded": "2.0.3"
 	}
 }

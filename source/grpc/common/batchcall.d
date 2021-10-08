@@ -8,7 +8,7 @@ import grpc.common.metadata;
 import grpc.common.byte_buffer;
 import grpc.logger;
 import std.exception : enforce;
-import std.experimental.allocator : theAllocator, make, dispose;
+import core.lifetime;
 
 interface RemoteOp {
     grpc_op_type type();
@@ -34,17 +34,8 @@ class SendInitialMetadataOp : RemoteOp {
         return ret;
     }
     
-    void free() {
-        theAllocator.dispose(array);
-        array = null;
-    }
-
     this() {
-        array = theAllocator.make!MetadataArray();
-    }
-    
-    ~this() {
-        free;
+        array = MetadataArray.create();
     }
 }
 
@@ -61,21 +52,12 @@ class SendMessageOp : RemoteOp {
         grpc_op ret;
         enforce(_buf.valid, "expected byte buffer to be valid");
         ret.op = type();
-        ret.data.send_message.send_message = _buf.unsafeHandle;
+        ret.data.send_message.send_message = _buf.handle;
         return ret;
     }
 
     this(ref ubyte[] message) {
-        _buf = theAllocator.make!ByteBuffer(message);
-    }
-    
-    void free() {
-        theAllocator.dispose(_buf);
-        _buf = null;
-    }
-
-    ~this() {
-        free;
+        _buf = ByteBuffer.create(message);
     }
 }
 
@@ -102,20 +84,19 @@ class SendStatusFromServerOp : RemoteOp {
     }
     
     void free() {
-        theAllocator.dispose(this._trailing_metadata);
         grpc_slice_unref(_details);
     }
         
     this(grpc_status_code code, string details) {
         _details = string_to_slice(details);
         _status = code;
-        _trailing_metadata = theAllocator.make!MetadataArray();
+        _trailing_metadata = MetadataArray.create();
     }
     
     this() {
         _details = grpc_empty_slice();
         _status = cast(grpc_status_code)0;
-        _trailing_metadata = theAllocator.make!MetadataArray();
+        _trailing_metadata = MetadataArray.create();
     }
 
     ~this() {
@@ -140,23 +121,14 @@ class RecvInitialMetadataOp : RemoteOp {
         return ret;
     }
 
-    void free() {
-        theAllocator.dispose(_metadata);
-    }
-    
     this() {
-        _metadata = theAllocator.make!MetadataArray();
+        _metadata = MetadataArray.create();
     }
-    
-    ~this() {
-        free;
-    }
-
 }
 
 class RecvMessageOp : RemoteOp {
     private {
-        ByteBuffer _buf;
+        ByteBuffer* _buf;
     }
 
     grpc_op_type type() {
@@ -166,14 +138,14 @@ class RecvMessageOp : RemoteOp {
     grpc_op value() {
         grpc_op ret;
         ret.op = type();
-        ret.data.recv_message.recv_message = _buf.handle;
+        ret.data.recv_message.recv_message = _buf.safeHandle;
         return ret;
     }
     
     void free() {
     }
     
-    this(ByteBuffer buf) {
+    this(ByteBuffer* buf) {
         _buf = buf;
     }
     
@@ -198,11 +170,11 @@ class RecvStatusOnClientOp : RemoteOp {
 
 class RecvCloseOnServerOp : RemoteOp {
     private {
-        int* _cancelled;
+        __gshared int _cancelled;
     }
 
     int cancelled() {
-        return *_cancelled;
+        return _cancelled;
     }
 
     grpc_op_type type() {
@@ -212,21 +184,12 @@ class RecvCloseOnServerOp : RemoteOp {
     grpc_op value() {
         grpc_op ret;
         ret.op = type();
-        ret.data.recv_close_on_server.cancelled = _cancelled;
+        ret.data.recv_close_on_server.cancelled = &_cancelled;
 
         return ret;
     }
 
-    void free() {
-        theAllocator.dispose(_cancelled);
-    }
-    
     this() {
-        _cancelled = theAllocator.make!int();
-    }
-    
-    ~this() {  
-        free;
     }
 }
 
@@ -360,13 +323,15 @@ class BatchCall {
             // of an object (and the subsequent size of it)
             static foreach(sym; __traits(allMembers, mixin(__MODULE__))) {{
                 static if(sym[$ - 2 .. $] == "Op" && sym != "RemoteOp") {
-                    pragma(msg, sym);
+                    // pragma(msg, sym);
                     mixin("alias T = " ~ sym ~ ";");
                     if (obj !is null && type == typeid(T)) {
                         T realObj = cast(T)obj;
-                        realObj.free;
+                        static if (__traits(compiles, realObj.free)) {
+                            realObj.free;
+                        }
                         DEBUG!"Freeing %s (%x) (index %d/%d)"(sym, cast(void*)realObj, i, ops.length);
-                        theAllocator.dispose(realObj);
+                        destroy(realObj);
                         DEBUG!"OK!";
                         obj = null;
                     }

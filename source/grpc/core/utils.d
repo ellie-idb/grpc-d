@@ -5,32 +5,45 @@ import grpc.logger;
 import std.experimental.allocator : theAllocator, makeArray, dispose;
 public import core.time;
 
-string slice_to_string(grpc_slice slice) {
+auto slice_to_string(grpc_slice slice) @nogc {
     return slice_to_type!string(slice);
 }
 
-auto ref slice_to_type(T)(grpc_slice slice) 
+auto ref slice_to_type(T)(grpc_slice _slice) @nogc
 if(__traits(isPOD, T) && __traits(compiles, cast(T)[0x01, 0x02])) {
-    if (GRPC_SLICE_LENGTH(slice) != 0) {
-        ubyte[] data = theAllocator.makeArray!ubyte(GRPC_SLICE_START_PTR(slice)[0..GRPC_SLICE_LENGTH(slice)]);
-        DEBUG!"MAKE SURE TO FREE THIS ARRAY: %x"(data.ptr);
-        DEBUG!"data size: %d"(data.length);
-        return cast(T)data;
+    struct Slice {
+        grpc_slice slice;
+        
+        T data() {
+            return cast(T)GRPC_SLICE_START_PTR(slice)[0..GRPC_SLICE_LENGTH(slice)];
+        }
+
+        alias data this;
+
+        ~this() {
+            grpc_slice_unref(slice);
+        }
     }
-    return null;
+
+    if (GRPC_SLICE_LENGTH(_slice) != 0) {
+        grpc_slice slice = grpc_slice_copy(_slice);
+        grpc_slice_ref(slice);
+        return Slice(slice);
+    }
+
+    return Slice();
 }
 
-string byte_buffer_to_string(grpc_byte_buffer* bytebuf) {
+auto byte_buffer_to_string(grpc_byte_buffer* bytebuf) {
         return byte_buffer_to_type!string(bytebuf);
 }
 
-auto ref byte_buffer_to_type(T)(grpc_byte_buffer* bytebuf) {
+auto byte_buffer_to_type(T)(grpc_byte_buffer* bytebuf) {
         grpc_byte_buffer_reader reader;
         grpc_byte_buffer_reader_init(&reader, bytebuf);
         grpc_slice slices = grpc_byte_buffer_reader_readall(&reader);
         grpc_byte_buffer_reader_destroy(&reader);
         auto val = slice_to_type!T(slices);
-        grpc_slice_unref(slices);
         return val;
 }
 
@@ -47,12 +60,12 @@ grpc_slice type_to_slice(T)(T type) {
     return slice;
 }
     
-gpr_timespec durtotimespec(Duration time) {
+gpr_timespec durtotimespec(Duration time) @nogc nothrow {
     gpr_timespec t = gpr_time_from_nanos(time.split!"nsecs"().nsecs, GPR_TIMESPAN);
     return t;
 }
 
-Duration timespectodur(gpr_timespec time) {
+Duration timespectodur(gpr_timespec time) @nogc nothrow {
     return gpr_time_to_millis(gpr_time_sub(time, gpr_now(time.clock_type))).msecs; 
 }
 

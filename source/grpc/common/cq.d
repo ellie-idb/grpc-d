@@ -4,9 +4,10 @@ import interop.headers;
 import std.typecons;
 import grpc.core.tag;
 import grpc.core;
-import grpc.core.mutex;
+import grpc.core.sync.mutex;
 import grpc.core.resource;
 import grpc.core.utils;
+import core.lifetime;
 import std.experimental.allocator : theAllocator, make, dispose;
 
 //queue ok/ok type
@@ -25,7 +26,7 @@ class CompletionQueue(string T)
 {
 @safe:
     private { 
-        GPRMutex mutex;
+        shared(Mutex) mutex;
         SharedResource _cq;
         bool _inShutdownPath;
     }
@@ -39,7 +40,7 @@ class CompletionQueue(string T)
         return val;
     }
 
-    @property inout(grpc_completion_queue)* handle() inout @trusted pure nothrow {
+    inout(grpc_completion_queue)* handle() inout @trusted nothrow {
         return cast(typeof(return)) _cq.handle;
     }
 
@@ -102,7 +103,7 @@ class CompletionQueue(string T)
         DEBUG!"5";
         auto metadata = ctx.metadata.handle();
         DEBUG!"6";
-        auto data = ctx.data.handle();
+        auto data = ctx.data.safeHandle();
 
         DEBUG!"call: %x"(ctx.call);
 
@@ -127,15 +128,15 @@ class CompletionQueue(string T)
 
         assert(cq != null, "CQ creation error");
 
-        static Exception release(shared(void)* ptr) @trusted nothrow {
+        static bool release(shared(void)* ptr) @trusted nothrow {
             grpc_completion_queue_shutdown(cast(grpc_completion_queue*)ptr);
             grpc_completion_queue_destroy(cast(grpc_completion_queue*)ptr);
 
-            return null;
+            return true;
         }
 
         _cq = SharedResource(cast(shared)cq, &release);
-        mutex = theAllocator.make!GPRMutex();
+        mutex = cast(shared)Mutex.create();
     }
 
 

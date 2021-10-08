@@ -481,7 +481,7 @@ class Service(T) : ServiceHandlerInterface {
         threads = new ThreadGroup();
 
         // TODO: make this user-specifiable
-        workingThreads = 1;
+        workingThreads = 8;
 
         with(funcType) { 
             _funcCount[NORMAL] = 0;

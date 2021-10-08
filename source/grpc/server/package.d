@@ -1,6 +1,6 @@
 module grpc.server;
 import interop.headers;
-import grpc.core.mutex;
+import grpc.core.sync.mutex;
 import grpc.core.resource;
 import grpc.core.tag;
 import grpc.core;
@@ -10,11 +10,12 @@ import grpc.service;
 import grpc.logger;
 import google.rpc.status;
 import core.thread;
+import core.lifetime;
 
 class Server 
 {
     private {
-        GPRMutex mutex;
+        shared(Mutex) mutex;
         SharedResource _server;
         CompletionQueue!"Next"[] _registeredCqs;
         ServiceHandlerInterface[string] services;
@@ -31,11 +32,9 @@ class Server
                 grpc_server_shutdown_and_notify(handle, cq.handle, null);
             }
         }
-
-
     }
     
-    @property inout(grpc_server)* handle() inout @trusted pure nothrow {
+    inout(grpc_server)* handle() inout @trusted nothrow {
         return cast(typeof(return)) _server.handle;
     }
     
@@ -99,11 +98,16 @@ class Server
         }
     }
 
-    void* registerMethod(const(char*) remoteName, const(char*) host, grpc_server_register_method_payload_handling payload_handle, uint flags) 
+    void* registerMethod(const(char)[] remoteName, const(char)[] host, grpc_server_register_method_payload_handling payload_handle, uint flags) 
     {
+        import std.string : toStringz;
+        debug import std.stdio;
+        debug writefln("hello");
+        DEBUG!"lock";
         lock;
         scope(exit) unlock;
-        void* ptr = grpc_server_register_method(handle, remoteName, null, payload_handle, flags);
+        DEBUG!"register method %s"(remoteName);
+        void* ptr = grpc_server_register_method(handle, remoteName.toStringz, null, payload_handle, flags);
         return ptr;
     }
 
@@ -112,7 +116,6 @@ class Server
         assert(!started, "Cannot register a new service after Server.start() has been called.");
         import std.typecons;
         import std.traits;
-
 
         alias parent = BaseTypeTuple!T[1];
         alias serviceName = fullyQualifiedName!T;
@@ -139,7 +142,7 @@ class Server
                     else {
                         pragma(msg, "\tClient -> Server");
                     }
-
+                    DEBUG!"register %s"(remoteName);
                     registeredMethods[remoteName] = registerMethod(remoteName, "", GRPC_SRM_PAYLOAD_READ_INITIAL_BYTE_BUFFER, 0);
             }
         }
@@ -161,24 +164,26 @@ class Server
     }
 
     this(grpc_channel_args args) @trusted {
-    
         grpc_server* srv = grpc_server_create(&args, null);
         if (srv != null) {
-            static Exception release(shared(void)* ptr) @trusted nothrow {
+            static bool release(shared(void)* ptr) @trusted nothrow {
                 grpc_server_destroy(cast(grpc_server*)ptr);
-                return null;
+                return true;
             }
 
             _run = true;
+            DEBUG!"creating server resource";
             _server = SharedResource(cast(shared)srv, &release);
-            mutex = theAllocator.make!GPRMutex();
+            DEBUG!"creating mutex resource";
+            mutex = cast(shared)Mutex.create();
+            DEBUG!"done";
         } else {
-            throw new Exception("server creation failed");
+            assert(0, "creation failed");
         }
     }
 
-    package static Server opCall(grpc_channel_args args) @trusted {
-        Server obj = new Server(args);
-        return obj;
+    ~this() {
+        debug import std.stdio;
+        debug writefln("running");
     }
 }

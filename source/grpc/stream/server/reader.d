@@ -30,7 +30,7 @@ class ServerReader(T) {
 
         if (!_tag.ctx.data.valid) {
             DEBUG!"ctx data is invalid, asking for a new message";
-            RecvMessageOp op = theAllocator.make!(RecvMessageOp)(_tag.ctx.data);
+            RecvMessageOp op = theAllocator.make!(RecvMessageOp)(&_tag.ctx.data);
             BatchCall.runSingleOp(op, _cq, _tag, d);
             theAllocator.dispose(op);
         }
@@ -40,11 +40,9 @@ class ServerReader(T) {
         if(len != 0) {
             auto data = _tag.ctx.data.readAll();
             if (data.length != 0) { 
-                void* ubytePtr = data.ptr;
-                DEBUG!"POINTER: %x (or %x?)"(cast(void*)data, data.ptr);
-                protobuf = fromProtobuf!(T, ubyte[])(data);
-
-                theAllocator.dispose(cast(ubyte*)ubytePtr);
+                ubyte[] dat = data;
+                DEBUG!"%s"(data);
+                dat.fromProtobuf!(T)(protobuf);
             }
 
             _tag.ctx.data.cleanup();

@@ -6,50 +6,44 @@ import grpc.core.utils;
 import grpc.core.resource;
 import grpc.common.metadata;
 import grpc.common.byte_buffer;
-import grpc.core.mutex;
+import grpc.core.sync.mutex;
 import core.memory : GC;
+import core.lifetime;
 
 struct CallContext {
-@safe:
-    MonoTime timestamp;
-    GPRMutex mutex;
+@safe @nogc:
+    shared(Mutex) mutex;
     grpc_call** call;
     CallDetails details;
     MetadataArray metadata;
     ByteBuffer data;
+    MonoTime timestamp;
 
-    static CallContext opCall() @trusted {
-        CallContext obj;
-        obj.timestamp = MonoTime.init;
-        obj.mutex = theAllocator.make!GPRMutex();
-        obj.details = CallDetails();
-        obj.metadata = theAllocator.make!MetadataArray();
-        obj.data = ByteBuffer();
-        obj.call = cast(grpc_call**)gpr_zalloc((grpc_call**).sizeof); 
-
-        return obj;
-    }
-
-    ~this() @trusted {
-        gpr_free(cast(void*)call);
-        destroy(details);
-        destroy(timestamp);
-        theAllocator.dispose(metadata);
-        theAllocator.dispose(data);
-        theAllocator.dispose(mutex);
+    static CallContext create() @trusted {
+        auto call = cast(grpc_call**)gpr_zalloc((grpc_call**).sizeof); 
+        return CallContext(cast(shared)Mutex.create(),
+                           call,
+                           CallDetails.create(),
+                           MetadataArray.create(),
+                           ByteBuffer.create());
     }
 
     @disable this(this);
+
+    ~this() @trusted {
+        destroy(data);
+        gpr_free(cast(void*)call);
+    }
 }
 
 struct CallDetails {
-@safe:
+@safe @nogc:
     private {
-        GPRMutex mutex;
+        shared(Mutex) mutex;
         SharedResource _details;
     }
 
-    @property inout(grpc_call_details)* handle() inout @trusted pure nothrow {
+    inout(grpc_call_details)* handle() inout @trusted nothrow {
         return cast(typeof(return)) _details.handle;
     }
 
@@ -79,31 +73,29 @@ struct CallDetails {
         return d;
     }
 
-    static CallDetails opCall() @trusted {
-        CallDetails obj;
-        obj.mutex = theAllocator.make!GPRMutex();
+    static CallDetails create() @trusted {
         grpc_call_details* details;
 
         if ((details = cast(grpc_call_details*)gpr_zalloc((grpc_call_details).sizeof)) != null) {
-            static Exception release(shared(void)* ptr) @trusted nothrow {
+            static bool release(shared(void)* ptr) @trusted nothrow {
                 grpc_call_details_destroy(cast(grpc_call_details*)ptr);
                 gpr_free(cast(void*)ptr);
-                return null;
+                return true;
             }
             
             grpc_call_details_init(details);
-            obj._details = SharedResource(cast(shared)details, &release);
+            CallDetails obj = CallDetails(cast(shared)Mutex.create(), SharedResource(cast(shared)details, &release));
+            return obj;
         } else {
             assert(0, "memory allocation failed");
         }
 
-        return obj;
     }
 
     ~this() @trusted {
-        theAllocator.dispose(mutex);
         destroy(_details);
     }
+
 
     @disable this(this);
 }
@@ -112,8 +104,8 @@ struct CallDetails {
 // which actually exist, this should be never cleaned up by the garbage collector as it contains VERY important
 // things
 
-@nogc struct Tag {
-@safe:
+struct Tag {
+@safe @nogc:
     void* method;
     string methodName;
     ubyte[16] metadata;
@@ -123,13 +115,12 @@ struct CallDetails {
         Tag* obj = cast(Tag*)gpr_zalloc((Tag).sizeof);
         DEBUG!"new tag created at: %x size: %d"(obj, (Tag).sizeof);
         assert(obj != null, "memory allocation fail");
-        doNotMoveObject(obj, (Tag).sizeof);
-        obj.ctx = CallContext();
+        obj.ctx = CallContext.create();
         return obj;
     }
     
     static void free(Tag* tag) @trusted {
-        okToMoveObject(tag);
+        destroy(tag.ctx);
         gpr_free(tag);
     }
 

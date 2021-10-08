@@ -3,23 +3,24 @@ import interop.headers;
 import grpc.logger;
 import grpc.common.cq;
 import grpc.core.utils;
-import grpc.core.mutex;
+import grpc.core.sync.mutex;
 import grpc.core.resource;
 import interop.functors;
 import automem;
-import std.experimental.allocator : theAllocator, make, dispose;
+import core.lifetime;
 
 /*
     INFO: This ARRAY SHOULD *NEVER* be shared across threads.
     It is not thread-safe.
 */
-class MetadataArray {
+struct MetadataArray {
+@safe @nogc:
     private {
-        GPRMutex mutex;
+        shared(Mutex) mutex;
         SharedResource _meta;
     }
     
-    @property inout(grpc_metadata_array)* handle() inout @trusted pure nothrow {
+    inout(grpc_metadata_array)* handle() inout @trusted nothrow {
         return cast(typeof(return)) _meta.handle;
     }
 
@@ -43,26 +44,26 @@ class MetadataArray {
     grpc_metadata* opIndex(size_t i1) {
         mutex.lock;
         scope(exit) mutex.unlock;
-        if(i1 > count) 
-        {
-            import core.exception;
-            throw new RangeError();
-        }
-
-        return &handle.metadata[i1];
+        assert(i1 < count, "out of range");
+        return () @trusted {
+            return &handle.metadata[i1];
+        } ();
     }
 
     void cleanup() {
-        if (handle.metadata != null) { 
+        if (handle.metadata == null) return;
+
+        () @trusted {
             grpcwrap_metadata_array_destroy_metadata_only(handle);
-            handle.metadata = null;
-            handle.count = 0;
-            handle.capacity = 0;
-        }
+        } ();
+
+        handle.metadata = null;
+        handle.count = 0;
+        handle.capacity = 0;
     }
 
-    this() {
-        static Exception release(shared(void)* ptr) @trusted nothrow {
+    static MetadataArray create() @trusted {
+        static bool release(shared(void)* ptr) @trusted nothrow {
             grpc_metadata_array* array = cast(grpc_metadata_array*)ptr;
             if (array.metadata) {
                 for (int i = 0; i < array.count; i++) {
@@ -73,22 +74,19 @@ class MetadataArray {
                 array.metadata = null;
             }
             gpr_free(cast(void*)ptr);
-            return null;
+            return true;
         }
-        
+
         grpc_metadata_array* mt = cast(grpc_metadata_array*)gpr_zalloc((grpc_metadata_array).sizeof);
         if(mt != null) {
             grpcwrap_metadata_array_init(mt, 1);
-            _meta = SharedResource(cast(shared)mt, &release);
-            mutex = theAllocator.make!GPRMutex();
-        } else {
-            assert(0, "malloc error");
+            return MetadataArray(cast(shared)Mutex.create(), SharedResource(cast(shared)mt, &release));
         }
+        assert(0, "malloc error");
     }
     
     ~this() {
         _meta.forceRelease();
-        theAllocator.dispose(mutex);
     }
 }
 
