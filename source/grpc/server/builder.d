@@ -24,7 +24,8 @@ class ServerBuilder {
         return _port;
     }
 
-    void register(T)() {
+    void register(T)(Server server) {
+	_server = server;
         _server.registerService!T();
     }
 
