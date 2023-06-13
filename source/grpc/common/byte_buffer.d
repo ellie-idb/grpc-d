@@ -96,7 +96,8 @@ struct ByteBuffer {
             reader = reader.init;
         }
         
-        return slice_to_type!(ubyte[])(slice);
+	ubyte[] r = slice_to_type!(ubyte[])(slice);
+        return r;
     }
 
 
