@@ -50,13 +50,15 @@ struct CallDetails {
     @property string method() @trusted {
         mutex.lock;
         scope(exit) mutex.unlock;
-        return slice_to_string(handle.method); 
+	string r = slice_to_string(handle.method); 
+        return r;
     }
 
     @property string host() @trusted {
         mutex.lock;
         scope(exit) mutex.unlock;
-        return slice_to_string(handle.host);
+	string r = slice_to_string(handle.host);
+        return r;
     }
 
     @property uint flags() {
