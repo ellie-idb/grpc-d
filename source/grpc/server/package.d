@@ -12,13 +12,17 @@ import google.rpc.status;
 import core.thread;
 import core.lifetime;
 
+import containers.hashmap;  // emsi_containers
+
 class Server 
 {
     private {
         shared(Mutex) mutex;
         SharedResource _server;
         shared(CompletionQueue!"Next")[] _registeredCqs;
-        ServiceHandlerInterface[string] services;
+	// https://forum.dlang.org/thread/vkkwysusmnivkooglgwd@forum.dlang.org
+	// life is too short to debug dlang built-in AA to right, let's just use HashMap from emsi_containers
+        HashMap!(string, ServiceHandlerInterface) services;
         bool started;
         shared bool _run;
 
