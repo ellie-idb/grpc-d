@@ -6,6 +6,7 @@ license "WTFPL"
 dependency "protobuf" version="~>0.6.2"
 dependency "automem" version="~>0.6.2"
 dependency "grpc-d-interop" version="~>0.0.1"
+dependency "emsi_containers" version="~>0.9.0"
 configuration "library" {
 	targetType "library"
 	dflags "-dip25" "-dip1000"
