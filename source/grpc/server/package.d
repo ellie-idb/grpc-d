@@ -83,18 +83,23 @@ class Server
     }
 
     import core.atomic;
+    import std.stdio;
     void wait() {
         foreach(service; services.keys) {
             services[service].kickstart();
         }
 
         while (atomicLoad(_run)) {
+		writeln(services.keys);  // print out some wrong dict value of other (un-related) parts of the program
             
+	/* https://forum.dlang.org/thread/duetqujuoceancqtjlar@forum.dlang.org
+	   comment out this loop, as it's not actually doing much, and the SIGSEGV goes away
             foreach(service; services) {
                 if (service.runners == 0) {
                     ERROR!"service is DEAD!";
                 }
             }
+	    */
 
             Thread.sleep(1.seconds);
         }
