@@ -54,7 +54,7 @@ struct MetadataArray {
         if (handle.metadata == null) return;
 
         () @trusted {
-            grpcwrap_metadata_array_destroy_metadata_only(handle);
+            assumeNoGC(&grpcwrap_metadata_array_destroy_metadata_only)(handle);
         } ();
 
         handle.metadata = null;
@@ -79,7 +79,7 @@ struct MetadataArray {
 
         grpc_metadata_array* mt = cast(grpc_metadata_array*)gpr_zalloc((grpc_metadata_array).sizeof);
         if(mt != null) {
-            grpcwrap_metadata_array_init(mt, 1);
+            assumeNoGC(&grpcwrap_metadata_array_init)(mt, 1);
             return MetadataArray(cast(shared)Mutex.create(), SharedResource(cast(shared)mt, &release));
         }
         assert(0, "malloc error");

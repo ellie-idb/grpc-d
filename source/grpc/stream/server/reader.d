@@ -9,6 +9,8 @@ import grpc.common.batchcall;
 import automem;
 import std.experimental.allocator : theAllocator, make, makeArray, dispose;
 
+alias Reader = ServerReader;
+
 struct ServerReader(T) {
     private {
         bool _closed;

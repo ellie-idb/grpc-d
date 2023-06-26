@@ -195,12 +195,16 @@ class RecvCloseOnServerOp : RemoteOp {
 
 class BatchCall {
     private {
-        Vector!(RemoteOp) ops;
+        // At one time, there should *realistically* be no more then 128 queued operations?
+        enum MAX_REMOTE_OPS = 128;
+        RemoteOp[MAX_REMOTE_OPS] ops;
+        size_t opCount;
     }
 
     void addOp(RemoteOp _op) {
         import std.algorithm.mutation;
-        ops ~= _op;
+        assert(opCount < MAX_REMOTE_OPS, "Too many operations submitted");
+        ops[opCount++] = _op;
     }
 
     static grpc_call_error kick(CompletionQueue!"Next" cq, Tag* _tag, Duration d = 1.seconds) {
@@ -265,7 +269,6 @@ class BatchCall {
     // the library can't adequately catch the event (and may result in odd cancellations)
 
     grpc_call_error run(CompletionQueue!"Next" cq, Tag* _tag, Duration d = 1.seconds) { 
-        //assert(sanityCheck(), "failed sanity check");
         assert(_tag != null, "tag should never be null");
 
         if (callOverDeadline(_tag)) {
@@ -273,14 +276,16 @@ class BatchCall {
             return GRPC_CALL_ERROR;
         }
 
-        Vector!(grpc_op) _ops;
+        grpc_op[MAX_REMOTE_OPS] _ops;
+        size_t convOpCount = 0;
 
-        foreach(op; ops) {
-            _ops ~= op.value();
+        for(int i = 0; i < opCount; i++) {
+            assert(convOpCount < MAX_REMOTE_OPS, "Too many operations submitted");
+            _ops[convOpCount++] = ops[i].value();
         }
 
-        DEBUG!"starting batch on tag (%x, ops: %d)"(_tag, _ops.length);
-        grpc_call_error status = grpc_call_start_batch(*_tag.ctx.call, _ops.ptr, _ops.length, _tag, null);  
+        DEBUG!"starting batch on tag (%x, ops: %d)"(_tag, convOpCount);
+        grpc_call_error status = grpc_call_start_batch(*_tag.ctx.call, _ops.ptr, convOpCount, _tag, null);  
         grpc_event evt = cq.next(d); 
         while (evt.type != GRPC_OP_COMPLETE) {
             import core.time;
@@ -294,12 +299,10 @@ class BatchCall {
                 break;
             }
 
-            if (status == GRPC_CALL_OK) {
-                DEBUG!"waiting for op to complete";
-            } else if (status == GRPC_CALL_ERROR_TOO_MANY_OPERATIONS) {
+            if (status == GRPC_CALL_ERROR_TOO_MANY_OPERATIONS) {
                 grpc_call_cancel(*_tag.ctx.call, null);
                 break;
-            } else {
+            } else if (status != GRPC_CALL_OK) {
                 ERROR!"STATUS: %s"(status);
                 break;
             }
@@ -314,7 +317,7 @@ class BatchCall {
     
     void reset() {
         DEBUG!"Resetting operations (length: %d)"(ops.length);
-        for(int i = 0; i < ops.length; i++) {
+        for(int i = 0; i < opCount; i++) {
             if (ops[i] is null) continue;
             
             Object obj = cast(Object)ops[i];
@@ -334,18 +337,10 @@ class BatchCall {
                         destroy(realObj);
                         DEBUG!"OK!";
                         obj = null;
+                        ops[i] = null;
                     }
                 }
             }}
         }
-        
-        ops.free;
-    }
-
-    this() {
-        ops = Vector!(RemoteOp)();
-    }
-
-    ~this() {
     }
 }

@@ -89,13 +89,6 @@ class Server
         }
 
         while (atomicLoad(_run)) {
-            
-            foreach(service; services) {
-                if (service.runners == 0) {
-                    ERROR!"service is DEAD!";
-                }
-            }
-
             Thread.sleep(1.seconds);
         }
 
