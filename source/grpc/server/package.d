@@ -70,7 +70,7 @@ class Server
         lock;
         scope(exit) unlock;
 
-        auto status = grpc_server_add_insecure_http2_port(handle, fmt.toStringz);
+        auto status = grpc_server_add_http2_port(handle, fmt.toStringz, grpc_insecure_server_credentials_create());
         if(status == port) {
             INFO!"server binded to %s"(fmt);
             return true;

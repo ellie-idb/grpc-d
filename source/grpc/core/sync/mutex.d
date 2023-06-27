@@ -2,11 +2,13 @@ module grpc.core.sync.mutex;
 import interop.headers;
 import grpc.core.resource;
 import grpc.core.utils;
+import core.stdc.stdio;
 
 struct Mutex {
 @safe @nogc:
     package {
-        gpr_mu mu; 
+        gpr_mu mu;
+        bool initialized;
     }
 
     void lock() @trusted nothrow shared const {
@@ -24,6 +26,7 @@ struct Mutex {
     static Mutex create() @trusted {
         Mutex m = void;
         gpr_mu_init(&m.mu);
+        m.initialized = true;
         return cast(typeof(return))m;
     }
 
@@ -31,7 +34,7 @@ struct Mutex {
     @disable this();
 
     ~this() @trusted {
-        if (mu != cast(typeof(mu))gpr_mu.init) {
+        if (initialized) {
             gpr_mu_destroy(cast(gpr_mu*)&mu);
         }
     }

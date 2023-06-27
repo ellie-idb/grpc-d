@@ -69,7 +69,8 @@ class Channel {
 
 	this(string target) {
         import std.string;
-        channel = grpc_insecure_channel_create(target.toStringz, null, null);
+
+        channel = grpc_channel_create(target.toStringz, grpc_insecure_credentials_create(), null);
         assert(channel != null, "channel was null");
 	}
 

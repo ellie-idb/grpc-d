@@ -61,13 +61,6 @@ struct CallDetails {
         return r;
     }
 
-    @property uint flags() {
-        mutex.lock;
-        scope(exit) mutex.unlock;
-        uint flags = handle.flags;
-        return flags;
-    }
-
     @property Duration deadline() @trusted {
         mutex.lock;
         scope(exit) mutex.unlock;
